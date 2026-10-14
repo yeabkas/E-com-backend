@@ -134,10 +134,11 @@ elif is_port_open('localhost', 5432):
     }
 else:
     print("WARNING: PostgreSQL not detected on port 5432. Falling back to SQLite.", file=sys.stderr)
+    db_file = '/tmp/db.sqlite3' if os.environ.get('VERCEL') else (BASE_DIR / 'db.sqlite3')
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            'NAME': db_file,
         }
     }
 
@@ -241,14 +242,22 @@ CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
 
-# Redis cache
-REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/1')
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': REDIS_URL,
+# Cache: Redis if configured, otherwise in-memory LocMemCache (for serverless/local dev)
+REDIS_URL = os.environ.get('REDIS_URL')
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+        }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'ecom_cache',
+        }
+    }
 
 CELERY_BEAT_SCHEDULE = {
     # Hourly sweep: cancel stale unpaid orders, expire abandoned anonymous carts.
