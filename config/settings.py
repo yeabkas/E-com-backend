@@ -134,7 +134,16 @@ elif is_port_open('localhost', 5432):
     }
 else:
     print("WARNING: PostgreSQL not detected on port 5432. Falling back to SQLite.", file=sys.stderr)
-    db_file = '/tmp/db.sqlite3' if os.environ.get('VERCEL') else (BASE_DIR / 'db.sqlite3')
+    if os.environ.get('VERCEL'):
+        import shutil
+        tmp_db = Path('/tmp/db.sqlite3')
+        base_db = BASE_DIR / 'db.sqlite3'
+        if not tmp_db.exists() and base_db.exists():
+            shutil.copyfile(base_db, tmp_db)
+        db_file = tmp_db
+    else:
+        db_file = BASE_DIR / 'db.sqlite3'
+
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
