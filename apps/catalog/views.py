@@ -11,10 +11,12 @@ from django.utils.text import slugify as _slugify
 from decimal import Decimal as DDecimal
 
 
-class CategoryListView(generics.ListAPIView):
+class CategoryListView(generics.ListCreateAPIView):
     """
     GET /api/v1/catalog/categories/
     List active root categories with their nested subcategories.
+    POST /api/v1/catalog/categories/
+    Define a new category.
     """
     serializer_class = CategorySerializer
     permission_classes = [permissions.AllowAny]
@@ -23,6 +25,33 @@ class CategoryListView(generics.ListAPIView):
     def get_queryset(self):
         # Return only root categories (no parent) that are active
         return Category.objects.filter(parent__isnull=True, is_active=True)
+
+    def create(self, request, *args, **kwargs):
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated or getattr(user, 'role', None) not in ('ADMIN', 'SELLER'):
+            return Response({'error': 'Authentication as Admin or Seller required.'}, status=status.HTTP_403_FORBIDDEN)
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Category name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        parent_id = request.data.get('parent')
+        parent = None
+        if parent_id:
+            try:
+                parent = Category.objects.get(id=parent_id)
+            except (Category.DoesNotExist, ValueError):
+                return Response({'error': 'Parent category not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = Category.objects.filter(name__iexact=name, parent=parent).first()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                existing.save()
+            return Response(CategorySerializer(existing).data, status=status.HTTP_200_OK)
+
+        category = Category(name=name, parent=parent)
+        category.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
 
 
 class ProductFilter(django_filters.FilterSet):
@@ -135,11 +164,14 @@ class AdminProductImportView(APIView):
                 if not name:
                     raise ValueError('missing name')
                 cat_name = (row.get('category') or '').strip()
-                cat = Category.objects.filter(is_active=True).filter(name__iexact=cat_name).first()
-                if cat is None:
+                if cat_name:
+                    cat = Category.objects.filter(is_active=True).filter(name__iexact=cat_name).first()
+                    if cat is None:
+                        cat = Category.objects.create(name=cat_name)
+                else:
                     cat = Category.objects.filter(is_active=True).first()
                     if cat is None:
-                        raise ValueError('no categories')
+                        cat = Category.objects.create(name='General')
                 price_raw = row.get('price') or row.get('base_price') or '0'
                 base_price = DDecimal(price_raw)
                 is_active_str = (row.get('is_active') or 'true').strip().lower()
@@ -289,3 +321,68 @@ class AdminInventoryViewSet(viewsets.ModelViewSet):
             if product is None or product.seller_id != self.request.user.id:
                 raise permissions.PermissionDenied('You can only add inventory to your own products.')
         serializer.save()
+
+
+class AdminCategoryViewSet(viewsets.ModelViewSet):
+    """
+    CRUD API for Categories.
+    Admins & Sellers can list, create, update, and delete categories.
+    """
+    serializer_class = CategorySerializer
+    permission_classes = [permissions.AllowAny]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'slug']
+    ordering_fields = ['name', 'created_at']
+
+    def _auth_ok(self, request):
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated:
+            return False
+        if getattr(user, 'role', None) not in ('ADMIN', 'SELLER'):
+            return False
+        return True
+
+    def get_queryset(self):
+        qs = Category.objects.all().order_by('name')
+        active_only = self.request.query_params.get('active_only')
+        if active_only in ('1', 'true', 'yes'):
+            qs = qs.filter(is_active=True)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        if not self._auth_ok(request):
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        name = (request.data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Category name is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        parent_id = request.data.get('parent')
+        parent = None
+        if parent_id:
+            try:
+                parent = Category.objects.get(id=parent_id)
+            except (Category.DoesNotExist, ValueError):
+                return Response({'error': 'Parent category not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        existing = Category.objects.filter(name__iexact=name, parent=parent).first()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                existing.save()
+            return Response(CategorySerializer(existing).data, status=status.HTTP_200_OK)
+
+        category = Category(name=name, parent=parent)
+        category.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+    def destroy(self, request, *args, **kwargs):
+        if not self._auth_ok(request):
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        category = self.get_object()
+        if category.products.exists():
+            category.is_active = False
+            category.save()
+            return Response({'message': 'Category has associated products and was marked inactive.', 'is_active': False}, status=status.HTTP_200_OK)
+        category.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+

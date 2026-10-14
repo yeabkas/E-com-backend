@@ -17,17 +17,26 @@ class SellerInfoSerializer(serializers.ModelSerializer):
 
 
 class CategorySerializer(serializers.ModelSerializer):
-    """Basic Category serializer."""
-    subcategories = serializers.SerializerMethodField()
+    """Category serializer supporting nesting and category creation."""
+    slug = serializers.SlugField(required=False, read_only=True)
+    subcategories = serializers.SerializerMethodField(read_only=True)
+    parent_name = serializers.CharField(source='parent.name', read_only=True)
+    product_count = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Category
-        fields = ['id', 'name', 'slug', 'parent', 'subcategories']
+        fields = ['id', 'name', 'slug', 'parent', 'parent_name', 'subcategories', 'product_count', 'is_active']
+        read_only_fields = ['id', 'slug']
 
     def get_subcategories(self, obj):
-        if obj.subcategories.exists():
+        if hasattr(obj, 'subcategories') and obj.subcategories.exists():
             return CategorySerializer(obj.subcategories.filter(is_active=True), many=True).data
         return []
+
+    def get_product_count(self, obj):
+        if hasattr(obj, 'products'):
+            return obj.products.count()
+        return 0
 
 
 class ProductImageSerializer(serializers.ModelSerializer):

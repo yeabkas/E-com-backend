@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 from . import views
 
 router = DefaultRouter()
+router.register(r'admin/categories', views.AdminCategoryViewSet, basename='admin-category')
 router.register(r'admin/products', views.AdminProductViewSet, basename='admin-product')
 router.register(r'admin/inventory', views.AdminInventoryViewSet, basename='admin-inventory')
 
