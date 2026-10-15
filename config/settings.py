@@ -239,8 +239,9 @@ CSRF_TRUSTED_ORIGINS = [
 
 # Auth cookie (httpOnly refresh token)
 AUTH_REFRESH_COOKIE_NAME = 'refresh_token'
-AUTH_COOKIE_SECURE = os.environ.get('AUTH_COOKIE_SECURE', 'False').lower() in ('true', '1', 'yes')
-AUTH_COOKIE_SAMESITE = os.environ.get('AUTH_COOKIE_SAMESITE', 'Lax')
+is_production = bool(os.environ.get('VERCEL') or os.environ.get('RENDER'))
+AUTH_COOKIE_SECURE = os.environ.get('AUTH_COOKIE_SECURE', 'True' if is_production else 'False').lower() in ('true', '1', 'yes')
+AUTH_COOKIE_SAMESITE = os.environ.get('AUTH_COOKIE_SAMESITE', 'None' if is_production else 'Lax')
 
 # Celery / Redis
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
