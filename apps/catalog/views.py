@@ -379,6 +379,7 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
     Admins & Sellers can list, create, update, and delete categories.
     """
     serializer_class = CategorySerializer
+    pagination_class = None
     permission_classes = [permissions.AllowAny]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'slug']
