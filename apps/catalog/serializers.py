@@ -6,14 +6,27 @@ from apps.users.models import User
 class SellerInfoSerializer(serializers.ModelSerializer):
     """Public seller information."""
     store_name = serializers.SerializerMethodField()
+    profile_picture = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'first_name', 'last_name', 'email', 'store_name']
+        fields = ['id', 'first_name', 'last_name', 'email', 'store_name', 'profile_picture']
 
     def get_store_name(self, obj):
         name = f"{obj.first_name} {obj.last_name}".strip()
         return name if name else obj.email.split('@')[0]
+
+    def get_profile_picture(self, obj):
+        if obj.profile_picture:
+            try:
+                url = obj.profile_picture.url
+                request = self.context.get('request')
+                if request and not url.startswith('http'):
+                    return request.build_absolute_uri(url)
+                return url
+            except Exception:
+                return str(obj.profile_picture)
+        return None
 
 
 class CategorySerializer(serializers.ModelSerializer):

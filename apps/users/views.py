@@ -216,7 +216,64 @@ class MeView(generics.RetrieveUpdateAPIView):
         serializer = self.get_serializer(self.get_object(), data=request.data, partial=partial)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(UserSerializer(self.get_object()).data)
+        return Response(UserSerializer(self.get_object(), context={'request': request}).data)
+
+
+class ProfilePictureView(APIView):
+    """
+    POST /api/v1/auth/me/profile-picture/ — Upload a profile picture (multipart file or base64)
+    DELETE /api/v1/auth/me/profile-picture/ — Remove profile picture
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        file = request.FILES.get('profile_picture') or request.FILES.get('image') or request.FILES.get('avatar')
+        
+        if file:
+            if user.profile_picture:
+                try:
+                    user.profile_picture.delete(save=False)
+                except Exception:
+                    pass
+            user.profile_picture = file
+            user.save()
+            return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
+        
+        b64_data = request.data.get('profile_picture')
+        if b64_data and isinstance(b64_data, str) and b64_data.startswith('data:image'):
+            import base64
+            import uuid
+            from django.core.files.base import ContentFile
+            try:
+                format, imgstr = b64_data.split(';base64,')
+                ext = format.split('/')[-1]
+                if ext == 'jpeg':
+                    ext = 'jpg'
+                if user.profile_picture:
+                    try:
+                        user.profile_picture.delete(save=False)
+                    except Exception:
+                        pass
+                data = ContentFile(base64.b64decode(imgstr), name=f"avatar_{uuid.uuid4().hex[:8]}.{ext}")
+                user.profile_picture = data
+                user.save()
+                return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
+            except Exception as e:
+                return Response({'error': f'Failed to process image: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({'error': 'No image file or valid image data provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request):
+        user = request.user
+        if user.profile_picture:
+            try:
+                user.profile_picture.delete(save=False)
+            except Exception:
+                pass
+            user.profile_picture = None
+            user.save()
+        return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
 
 
 class AddressListCreateView(generics.ListCreateAPIView):

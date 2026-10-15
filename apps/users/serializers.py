@@ -56,14 +56,27 @@ class LoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     """Serializer for user profile data."""
     full_name = serializers.ReadOnlyField()
+    profile_picture = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'first_name', 'last_name', 'full_name',
-            'role', 'phone', 'is_verified', 'created_at',
+            'role', 'phone', 'profile_picture', 'is_verified', 'created_at',
         ]
         read_only_fields = ['id', 'email', 'role', 'is_verified', 'created_at']
+
+    def get_profile_picture(self, obj):
+        if obj.profile_picture:
+            try:
+                url = obj.profile_picture.url
+                request = self.context.get('request')
+                if request and not url.startswith('http'):
+                    return request.build_absolute_uri(url)
+                return url
+            except Exception:
+                return str(obj.profile_picture)
+        return None
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
@@ -71,7 +84,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'phone']
+        fields = ['first_name', 'last_name', 'phone', 'profile_picture']
 
 
 class AddressSerializer(serializers.ModelSerializer):
