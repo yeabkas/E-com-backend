@@ -9,8 +9,11 @@ router.register(r'admin/inventory', views.AdminInventoryViewSet, basename='admin
 
 urlpatterns = [
     path('categories/', views.CategoryListView.as_view(), name='category-list'),
+    path('sellers/', views.SellerListView.as_view(), name='seller-list'),
+    path('sellers/<uuid:pk>/', views.SellerDetailView.as_view(), name='seller-detail'),
     path('products/', views.ProductListView.as_view(), name='product-list'),
     path('products/<slug:slug>/', views.ProductDetailView.as_view(), name='product-detail'),
     path('restock-subscriptions/', views.RestockSubscriptionCreateView.as_view(), name='restock-sub-create'),
-    path('admin/import-products/', views.AdminProductImportView.as_view(), name='admin-product-import'),    path('', include(router.urls)),
+    path('admin/import-products/', views.AdminProductImportView.as_view(), name='admin-product-import'),
+    path('', include(router.urls)),
 ]

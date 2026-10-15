@@ -3,7 +3,11 @@ from django_filters.rest_framework import DjangoFilterBackend
 import django_filters
 from django.db.models import Q
 from .models import Category, Product
-from .serializers import CategorySerializer, ProductListSerializer, ProductDetailSerializer, RestockSubscriptionSerializer
+from .serializers import (
+    CategorySerializer, ProductListSerializer, ProductDetailSerializer,
+    RestockSubscriptionSerializer, SellerInfoSerializer
+)
+from apps.users.models import User
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 import csv
@@ -58,10 +62,11 @@ class ProductFilter(django_filters.FilterSet):
     min_price = django_filters.NumberFilter(field_name="base_price", lookup_expr='gte')
     max_price = django_filters.NumberFilter(field_name="base_price", lookup_expr='lte')
     category = django_filters.CharFilter(field_name="category__slug")
+    seller = django_filters.UUIDFilter(field_name="seller__id")
 
     class Meta:
         model = Product
-        fields = ['category', 'min_price', 'max_price']
+        fields = ['category', 'min_price', 'max_price', 'seller']
 
 
 class ProductListView(generics.ListAPIView):
@@ -77,6 +82,11 @@ class ProductListView(generics.ListAPIView):
     def get_queryset(self):
         # Only return active products, prefetch related to optimize queries
         qs = Product.objects.filter(is_active=True).select_related('category', 'seller').prefetch_related('images')
+
+        seller_id = self.request.query_params.get('seller') or self.request.query_params.get('seller_id')
+        if seller_id:
+            qs = qs.filter(seller_id=seller_id)
+
         search = self.request.query_params.get('search')
         if search:
             qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search) | Q(category__name__icontains=search))
@@ -107,6 +117,46 @@ class ProductListView(generics.ListAPIView):
 
     search_fields = ['name', 'description']
     ordering_fields = ['base_price', 'created_at', 'average_rating', 'ranking']
+
+
+class SellerListView(generics.ListAPIView):
+    """
+    GET /api/v1/catalog/sellers/
+    List active shops/sellers with product count, profile picture, etc.
+    """
+    serializer_class = SellerInfoSerializer
+    permission_classes = [permissions.AllowAny]
+    pagination_class = None
+
+    def get_queryset(self):
+        qs = User.objects.filter(
+            Q(role='SELLER') | Q(products__isnull=False),
+            is_active=True,
+            is_suspended=False
+        ).distinct()
+
+        search = self.request.query_params.get('search')
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search)
+            )
+
+        return qs.order_by('-created_at')
+
+
+class SellerDetailView(generics.RetrieveAPIView):
+    """
+    GET /api/v1/catalog/sellers/<pk>/
+    Get public seller/shop profile by user ID.
+    """
+    serializer_class = SellerInfoSerializer
+    permission_classes = [permissions.AllowAny]
+    lookup_field = 'pk'
+
+    def get_queryset(self):
+        return User.objects.filter(is_active=True, is_suspended=False)
 
 
 class ProductDetailView(generics.RetrieveAPIView):

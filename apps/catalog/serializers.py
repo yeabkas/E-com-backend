@@ -7,10 +7,15 @@ class SellerInfoSerializer(serializers.ModelSerializer):
     """Public seller information."""
     store_name = serializers.SerializerMethodField()
     profile_picture = serializers.SerializerMethodField()
+    product_count = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'first_name', 'last_name', 'email', 'store_name', 'profile_picture']
+        fields = [
+            'id', 'first_name', 'last_name', 'email', 'phone',
+            'store_name', 'profile_picture', 'product_count',
+            'is_verified', 'created_at'
+        ]
 
     def get_store_name(self, obj):
         name = f"{obj.first_name} {obj.last_name}".strip()
@@ -27,6 +32,11 @@ class SellerInfoSerializer(serializers.ModelSerializer):
             except Exception:
                 return str(obj.profile_picture)
         return None
+
+    def get_product_count(self, obj):
+        if hasattr(obj, 'products'):
+            return obj.products.filter(is_active=True).count()
+        return 0
 
 
 class CategorySerializer(serializers.ModelSerializer):
