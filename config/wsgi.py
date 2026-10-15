@@ -16,17 +16,19 @@ if os.environ.get('VERCEL'):
             call_command('seed_db')
 
         from apps.users.models import User
-        for admin_email in ['Admin@login.com', 'admin@login.com', 'test@admin.com', 'admin@example.com']:
-            admin_user = User.objects.filter(email__iexact=admin_email).first()
+        for admin_email in ['admin@login.com', 'admin@example.com', 'test@admin.com']:
+            norm_email = admin_email.strip().lower()
+            admin_user = User.objects.filter(email__iexact=norm_email).first()
             if not admin_user:
                 User.objects.create_superuser(
-                    email=admin_email,
+                    email=norm_email,
                     password='adminpassword123',
                     first_name='Admin',
                     last_name='User'
                 )
             else:
                 admin_user.set_password('adminpassword123')
+                admin_user.email = norm_email
                 admin_user.role = User.Role.ADMIN
                 admin_user.is_superuser = True
                 admin_user.is_staff = True

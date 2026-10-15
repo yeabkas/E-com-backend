@@ -35,10 +35,18 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        email = data.get('email', '').lower()
+        raw_email = (data.get('email') or '').strip()
+        email = raw_email.lower()
         password = data.get('password', '')
 
-        user = authenticate(username=email, password=password)
+        user = authenticate(username=raw_email, password=password)
+        if user is None:
+            user = authenticate(username=email, password=password)
+        if user is None:
+            from apps.users.models import User
+            matched = User.objects.filter(email__iexact=raw_email).first()
+            if matched and matched.check_password(password):
+                user = matched
 
         if user is None:
             raise serializers.ValidationError('Invalid email or password.')
