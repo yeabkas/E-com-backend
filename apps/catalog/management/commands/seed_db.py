@@ -11,18 +11,40 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         self.stdout.write('Seeding database with dummy data...')
 
-        # 1. Create Admin User
-        admin_email = 'admin@example.com'
-        if not User.objects.filter(email=admin_email).exists():
-            User.objects.create_superuser(
-                email=admin_email,
-                password='adminpassword123',
-                first_name='Admin',
-                last_name='User'
+        # 1. Create Admin Users
+        for admin_email in ['Admin@login.com', 'admin@login.com', 'test@admin.com', 'admin@example.com']:
+            user = User.objects.filter(email__iexact=admin_email).first()
+            if not user:
+                User.objects.create_superuser(
+                    email=admin_email,
+                    password='adminpassword123',
+                    first_name='Admin',
+                    last_name='User'
+                )
+                self.stdout.write(self.style.SUCCESS(f'Created admin user: {admin_email} (password: adminpassword123)'))
+            else:
+                user.set_password('adminpassword123')
+                user.role = User.Role.ADMIN
+                user.is_superuser = True
+                user.is_staff = True
+                user.is_active = True
+                user.save()
+                self.stdout.write(f'Updated admin user {admin_email}.')
+
+        # 1b. Create Demo Seller
+        seller_email = 'seller@example.com'
+        seller_user = User.objects.filter(email=seller_email).first()
+        if not seller_user:
+            User.objects.create_user(
+                email=seller_email,
+                password='sellerpassword123',
+                first_name='Demo',
+                last_name='Seller',
+                role=User.Role.SELLER,
+                is_staff=True,
+                is_verified=True
             )
-            self.stdout.write(self.style.SUCCESS(f'Created admin user: {admin_email} (password: adminpassword123)'))
-        else:
-            self.stdout.write(f'Admin user {admin_email} already exists.')
+            self.stdout.write(self.style.SUCCESS(f'Created demo seller: {seller_email} (password: sellerpassword123)'))
 
         # 2. Create Dummy Customers
         customer_count = 5
