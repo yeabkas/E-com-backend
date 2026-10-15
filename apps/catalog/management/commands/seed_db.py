@@ -1,4 +1,5 @@
 import random
+import uuid
 from django.core.management.base import BaseCommand
 from apps.users.models import User
 from apps.users.tests.factories import UserFactory
@@ -10,8 +11,6 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         self.stdout.write('Seeding database with dummy data...')
-
-        import uuid
 
         # 1. Create Admin Users
         for admin_email in ['Admin@login.com', 'admin@login.com', 'test@admin.com', 'admin@example.com']:
@@ -51,7 +50,7 @@ class Command(BaseCommand):
             {'email': 'seller@example.com', 'password': 'sellerpassword123', 'first_name': 'Demo', 'last_name': 'Seller', 'role': User.Role.SELLER, 'is_staff': True, 'is_superuser': False},
             {'email': 'customer@example.com', 'password': 'customerpassword123', 'first_name': 'Demo', 'last_name': 'Customer', 'role': User.Role.CUSTOMER, 'is_staff': False, 'is_superuser': False},
         ]:
-            norm_email = u['email'].strip().lower()
+            norm_email = str(u['email']).strip().lower()
             fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
             demo_user = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
             if demo_user and demo_user.id != fixed_id:
