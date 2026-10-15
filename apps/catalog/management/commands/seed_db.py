@@ -11,17 +11,32 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         self.stdout.write('Seeding database with dummy data...')
 
+        import uuid
+
         # 1. Create Admin Users
         for admin_email in ['Admin@login.com', 'admin@login.com', 'test@admin.com', 'admin@example.com']:
-            user = User.objects.filter(email__iexact=admin_email).first()
+            norm_email = admin_email.strip().lower()
+            fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
+            user = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
+            if user and user.id != fixed_id:
+                user.delete()
+                user = None
+
             if not user:
-                User.objects.create_superuser(
-                    email=admin_email,
-                    password='adminpassword123',
+                user = User(
+                    id=fixed_id,
+                    email=norm_email,
                     first_name='Admin',
-                    last_name='User'
+                    last_name='User',
+                    role=User.Role.ADMIN,
+                    is_staff=True,
+                    is_superuser=True,
+                    is_active=True,
+                    is_verified=True,
                 )
-                self.stdout.write(self.style.SUCCESS(f'Created admin user: {admin_email} (password: adminpassword123)'))
+                user.set_password('adminpassword123')
+                user.save()
+                self.stdout.write(self.style.SUCCESS(f'Created admin user: {norm_email} (password: adminpassword123)'))
             else:
                 user.set_password('adminpassword123')
                 user.role = User.Role.ADMIN
@@ -29,22 +44,38 @@ class Command(BaseCommand):
                 user.is_staff = True
                 user.is_active = True
                 user.save()
-                self.stdout.write(f'Updated admin user {admin_email}.')
+                self.stdout.write(f'Updated admin user {norm_email}.')
 
-        # 1b. Create Demo Seller
-        seller_email = 'seller@example.com'
-        seller_user = User.objects.filter(email=seller_email).first()
-        if not seller_user:
-            User.objects.create_user(
-                email=seller_email,
-                password='sellerpassword123',
-                first_name='Demo',
-                last_name='Seller',
-                role=User.Role.SELLER,
-                is_staff=True,
-                is_verified=True
-            )
-            self.stdout.write(self.style.SUCCESS(f'Created demo seller: {seller_email} (password: sellerpassword123)'))
+        # 1b. Create Demo Seller & Customer
+        for u in [
+            {'email': 'seller@example.com', 'password': 'sellerpassword123', 'first_name': 'Demo', 'last_name': 'Seller', 'role': User.Role.SELLER, 'is_staff': True, 'is_superuser': False},
+            {'email': 'customer@example.com', 'password': 'customerpassword123', 'first_name': 'Demo', 'last_name': 'Customer', 'role': User.Role.CUSTOMER, 'is_staff': False, 'is_superuser': False},
+        ]:
+            norm_email = u['email'].strip().lower()
+            fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
+            demo_user = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
+            if demo_user and demo_user.id != fixed_id:
+                demo_user.delete()
+                demo_user = None
+
+            if not demo_user:
+                demo_user = User(
+                    id=fixed_id,
+                    email=norm_email,
+                    first_name=u['first_name'],
+                    last_name=u['last_name'],
+                    role=u['role'],
+                    is_staff=u['is_staff'],
+                    is_superuser=u['is_superuser'],
+                    is_active=True,
+                    is_verified=True,
+                )
+                demo_user.set_password(u['password'])
+                demo_user.save()
+                self.stdout.write(self.style.SUCCESS(f"Created {u['role']} user: {norm_email}"))
+            else:
+                demo_user.set_password(u['password'])
+                demo_user.save()
 
         # 2. Create Dummy Customers
         customer_count = 5

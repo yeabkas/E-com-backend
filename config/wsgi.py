@@ -60,7 +60,11 @@ if os.environ.get('VERCEL'):
         for u in demo_users:
             norm_email = u['email'].strip().lower()
             fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
-            user_obj = User.objects.filter(id=fixed_id).first() or User.objects.filter(email__iexact=norm_email).first()
+            user_obj = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
+            if user_obj and user_obj.id != fixed_id:
+                user_obj.delete()
+                user_obj = None
+
             if not user_obj:
                 user_obj = User(
                     id=fixed_id,
