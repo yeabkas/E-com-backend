@@ -204,20 +204,45 @@ class SellerSalesListView(APIView):
 
 
 class AdminMetricsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        user = request.user
+        if getattr(user, 'role', None) not in ('ADMIN', 'SELLER') and not getattr(user, 'is_staff', False):
+            return Response({'error': 'Admin or Seller access required.'}, status=status.HTTP_403_FORBIDDEN)
+
+        from apps.catalog.models import Product
+        from apps.catalog.serializers import ProductListSerializer
+
+        if getattr(user, 'role', None) == 'SELLER':
+            product_ids = Product.objects.filter(seller=user).values_list('id', flat=True)
+            seller_items = OrderItem.objects.filter(
+                product_id__in=product_ids,
+                order__status__in=[
+                    Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+                    Order.OrderStatus.SHIPPED, Order.OrderStatus.DELIVERED, Order.OrderStatus.COMPLETED
+                ]
+            )
+            revenue_total = seller_items.aggregate(total=Sum('total_price'))['total'] or 0
+            order_count = Order.objects.filter(items__product_id__in=product_ids).distinct().count()
+            top = Product.objects.filter(seller=user).order_by('-sales_count')[:10]
+            return Response({
+                'revenue': revenue_total,
+                'orders_by_status': {'COMPLETED': order_count},
+                'funnel': [{'status': 'COMPLETED', 'count': order_count}],
+                'top_products': ProductListSerializer(top, many=True, context={'request': request}).data,
+            })
+
         revenue_total = Order.objects.filter(
             status__in=[Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
                         Order.OrderStatus.SHIPPED, Order.OrderStatus.DELIVERED, Order.OrderStatus.COMPLETED]
         ).aggregate(total=Sum('total_amount'))['total'] or 0
         funnel = list(Order.objects.values('status').annotate(count=Count('id')))
-        top_products = list(ProductSerializer if False else None and [])
-        from apps.catalog.models import Product
-        from apps.catalog.serializers import ProductListSerializer
+        orders_by_status = {f['status']: f['count'] for f in funnel}
         top = Product.objects.order_by('-sales_count')[:10]
         return Response({
             'revenue': revenue_total,
             'funnel': funnel,
+            'orders_by_status': orders_by_status,
             'top_products': ProductListSerializer(top, many=True, context={'request': request}).data,
         })
