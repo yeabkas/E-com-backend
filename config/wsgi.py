@@ -66,6 +66,7 @@ if os.environ.get('VERCEL'):
                 user_obj = None
 
             if not user_obj:
+                # Only create if user doesn't exist yet
                 user_obj = User(
                     id=fixed_id,
                     email=norm_email,
@@ -80,14 +81,35 @@ if os.environ.get('VERCEL'):
                 user_obj.set_password(u['password'])
                 user_obj.save()
             else:
-                user_obj.set_password(u['password'])
-                user_obj.email = norm_email
-                user_obj.role = u['role']
-                user_obj.is_staff = u['is_staff']
-                user_obj.is_superuser = u['is_superuser']
-                user_obj.is_active = True
-                user_obj.is_verified = True
-                user_obj.save()
+                # Update role/permissions WITHOUT re-hashing the password.
+                # Re-hashing on every cold start changes the password hash
+                # (due to random salt), which invalidates Django admin sessions
+                # because session_hash is derived from the password hash.
+                needs_save = False
+                if user_obj.email != norm_email:
+                    user_obj.email = norm_email
+                    needs_save = True
+                if user_obj.role != u['role']:
+                    user_obj.role = u['role']
+                    needs_save = True
+                if user_obj.is_staff != u['is_staff']:
+                    user_obj.is_staff = u['is_staff']
+                    needs_save = True
+                if user_obj.is_superuser != u['is_superuser']:
+                    user_obj.is_superuser = u['is_superuser']
+                    needs_save = True
+                if not user_obj.is_active:
+                    user_obj.is_active = True
+                    needs_save = True
+                if not user_obj.is_verified:
+                    user_obj.is_verified = True
+                    needs_save = True
+                # Only set password if user can't log in with the expected password
+                if not user_obj.check_password(u['password']):
+                    user_obj.set_password(u['password'])
+                    needs_save = True
+                if needs_save:
+                    user_obj.save()
     except Exception as e:
         import sys
         print(f"Auto-migration on Vercel notice: {e}", file=sys.stderr)

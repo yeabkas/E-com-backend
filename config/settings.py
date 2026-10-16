@@ -243,6 +243,15 @@ is_production = bool(os.environ.get('VERCEL') or os.environ.get('RENDER'))
 AUTH_COOKIE_SECURE = os.environ.get('AUTH_COOKIE_SECURE', 'True' if is_production else 'False').lower() in ('true', '1', 'yes')
 AUTH_COOKIE_SAMESITE = os.environ.get('AUTH_COOKIE_SAMESITE', 'None' if is_production else 'Lax')
 
+# Session & CSRF cookie settings — CRITICAL for Django admin on HTTPS/serverless (Vercel)
+# Without these, the admin panel gets 403 CSRF errors and loses sessions between clicks.
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Explicit: persist sessions in the database, not memory/filesystem
+SESSION_COOKIE_SECURE = is_production        # Must be True on HTTPS or browser won't send session cookie
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'              # Lax is sufficient for same-domain admin navigation
+CSRF_COOKIE_SECURE = is_production           # Must be True on HTTPS or CSRF validation fails
+CSRF_COOKIE_SAMESITE = 'Lax'
+
 # Celery / Redis
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
