@@ -71,11 +71,16 @@ class ProductImageSerializer(serializers.ModelSerializer):
         fields = ['id', 'image', 'alt_text', 'is_primary', 'order']
 
     def get_image(self, obj):
+        if getattr(obj, 'image_data', None):
+            return obj.image_data
         request = self.context.get('request')
         if obj.image:
-            if request:
-                return request.build_absolute_uri(obj.image.url)
-            return obj.image.url
+            try:
+                if request:
+                    return request.build_absolute_uri(obj.image.url)
+                return obj.image.url
+            except Exception:
+                pass
         return None
 
 
@@ -103,14 +108,18 @@ class ProductListSerializer(serializers.ModelSerializer):
         ]
 
     def get_primary_image(self, obj):
-        image = obj.images.filter(is_primary=True).first()
-        if not image:
-            image = obj.images.first()
+        image = obj.images.filter(is_primary=True).first() or obj.images.first()
         if image:
-            request = self.context.get('request')
-            if request:
-                return request.build_absolute_uri(image.image.url)
-            return image.image.url
+            if getattr(image, 'image_data', None):
+                return image.image_data
+            if image.image:
+                try:
+                    request = self.context.get('request')
+                    if request:
+                        return request.build_absolute_uri(image.image.url)
+                    return image.image.url
+                except Exception:
+                    pass
         return None
 
 

@@ -18,7 +18,14 @@ class WishlistView(APIView):
         data = []
         for w in items:
             img = w.product.images.filter(is_primary=True).first() or w.product.images.first()
-            img_url = request.build_absolute_uri(img.image.url) if (img and img.image) else None
+            img_url = None
+            if img:
+                img_url = getattr(img, 'image_data', None)
+                if not img_url and img.image:
+                    try:
+                        img_url = request.build_absolute_uri(img.image.url)
+                    except Exception:
+                        img_url = None
             first_inv = w.product.variants.filter(quantity_available__gt=0).first() or w.product.variants.first()
             data.append({
                 'id': str(w.id),

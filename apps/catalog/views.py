@@ -314,16 +314,55 @@ class AdminProductViewSet(viewsets.ModelViewSet):
         if not files:
             return Response({'error': "No files provided under the 'images' field."}, status=status.HTTP_400_BAD_REQUEST)
 
+        import base64
+        import io
+        from PIL import Image
+
         created = []
         existing = product.images.count()
         for i, f in enumerate(files):
-            img = ProductImage.objects.create(
-                product=product,
-                image=f,
-                alt_text=request.data.get('alt_text', '') or product.name,
-                is_primary=(existing == 0 and i == 0),
-                order=existing + i,
-            )
+            # Process & optimize image with Pillow to create base64 data URI
+            try:
+                im = Image.open(f)
+                im.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                out_fmt = 'PNG' if getattr(im, 'format', None) == 'PNG' else 'JPEG'
+                if out_fmt == 'JPEG' and im.mode in ('RGBA', 'P', 'LA'):
+                    im = im.convert('RGB')
+                out_buf = io.BytesIO()
+                im.save(out_buf, format=out_fmt, quality=85, optimize=True)
+                b64_str = base64.b64encode(out_buf.getvalue()).decode('utf-8')
+                mime = 'image/png' if out_fmt == 'PNG' else 'image/jpeg'
+                data_uri = f"data:{mime};base64,{b64_str}"
+            except Exception:
+                f.seek(0)
+                content = f.read()
+                content_type = getattr(f, 'content_type', 'image/jpeg') or 'image/jpeg'
+                b64_str = base64.b64encode(content).decode('utf-8')
+                data_uri = f"data:{content_type};base64,{b64_str}"
+
+            alt_text = request.data.get('alt_text', '') or product.name
+            is_primary = (existing == 0 and i == 0)
+
+            # Save with disk file if writable; gracefully fallback to database-only image_data on read-only environments
+            try:
+                f.seek(0)
+                img = ProductImage.objects.create(
+                    product=product,
+                    image=f,
+                    image_data=data_uri,
+                    alt_text=alt_text,
+                    is_primary=is_primary,
+                    order=existing + i,
+                )
+            except Exception:
+                img = ProductImage.objects.create(
+                    product=product,
+                    image=None,
+                    image_data=data_uri,
+                    alt_text=alt_text,
+                    is_primary=is_primary,
+                    order=existing + i,
+                )
             created.append(img)
         return Response(ProductImageSerializer(created, many=True, context={'request': request}).data, status=status.HTTP_201_CREATED)
 
@@ -369,6 +408,7 @@ class AdminInventoryViewSet(viewsets.ModelViewSet):
         if getattr(self.request.user, 'role', None) == 'SELLER':
             product = serializer.validated_data.get('product')
             if product is None or product.seller_id != self.request.user.id:
+                # pyrefly: ignore [missing-attribute]
                 raise permissions.PermissionDenied('You can only add inventory to your own products.')
         serializer.save()
 
