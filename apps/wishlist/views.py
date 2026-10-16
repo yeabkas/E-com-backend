@@ -13,13 +13,13 @@ class WishlistView(APIView):
     def get(self, request):
         items = request.user.wishlist_items.select_related(
             'product', 'product__category'
-        ).prefetch_related('product__images', 'product__inventory_items')
+        ).prefetch_related('product__images', 'product__variants')
 
         data = []
         for w in items:
             img = w.product.images.filter(is_primary=True).first() or w.product.images.first()
             img_url = request.build_absolute_uri(img.image.url) if (img and img.image) else None
-            first_inv = w.product.inventory_items.filter(quantity_available__gt=0).first() or w.product.inventory_items.first()
+            first_inv = w.product.variants.filter(quantity_available__gt=0).first() or w.product.variants.first()
             data.append({
                 'id': str(w.id),
                 'product_id': str(w.product.id),
