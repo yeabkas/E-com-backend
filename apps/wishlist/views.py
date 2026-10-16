@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.catalog.models import Product
+from apps.catalog.serializers import ProductImageSerializer
 from .models import WishlistItem
 
 
@@ -17,15 +18,21 @@ class WishlistView(APIView):
 
         data = []
         for w in items:
-            img = w.product.images.filter(is_primary=True).first() or w.product.images.first()
-            img_url = None
-            if img:
-                img_url = getattr(img, 'image_data', None)
-                if not img_url and img.image:
-                    try:
-                        img_url = request.build_absolute_uri(img.image.url)
-                    except Exception:
-                        img_url = None
+            serialized_images = ProductImageSerializer(
+                w.product.images.all(), many=True, context={'request': request}
+            ).data
+
+            primary_img = None
+            for img in serialized_images:
+                if img.get('is_primary') and img.get('image'):
+                    primary_img = img['image']
+                    break
+            if not primary_img and serialized_images:
+                for img in serialized_images:
+                    if img.get('image'):
+                        primary_img = img['image']
+                        break
+
             first_inv = w.product.variants.filter(quantity_available__gt=0).first() or w.product.variants.first()
             data.append({
                 'id': str(w.id),
@@ -37,7 +44,8 @@ class WishlistView(APIView):
                 'category_slug': w.product.category.slug if w.product.category else '',
                 'average_rating': float(w.product.average_rating) if hasattr(w.product, 'average_rating') else 5.0,
                 'review_count': getattr(w.product, 'review_count', 0),
-                'primary_image': img_url,
+                'primary_image': primary_img,
+                'images': serialized_images,
                 'in_stock': bool(first_inv and first_inv.quantity_available > 0),
                 'inventory_id': str(first_inv.id) if first_inv else None,
                 'created_at': w.created_at,
