@@ -11,23 +11,30 @@ class WishlistView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        items = request.user.wishlist_items.select_related('product', 'product__category').prefetch_related('product__images')
-        data = [
-            {
+        items = request.user.wishlist_items.select_related(
+            'product', 'product__category'
+        ).prefetch_related('product__images', 'product__inventory_items')
+
+        data = []
+        for w in items:
+            img = w.product.images.filter(is_primary=True).first() or w.product.images.first()
+            img_url = request.build_absolute_uri(img.image.url) if (img and img.image) else None
+            first_inv = w.product.inventory_items.filter(quantity_available__gt=0).first() or w.product.inventory_items.first()
+            data.append({
                 'id': str(w.id),
                 'product_id': str(w.product.id),
                 'product_slug': w.product.slug,
                 'product_name': w.product.name,
-                'base_price': w.product.base_price,
-                'primary_image': (
-                    request.build_absolute_uri(w.product.images.filter(is_primary=True).first().image.url)
-                    if w.product.images.filter(is_primary=True).exists()
-                    else None
-                ),
+                'base_price': str(w.product.base_price),
+                'category_name': w.product.category.name if w.product.category else 'General',
+                'category_slug': w.product.category.slug if w.product.category else '',
+                'average_rating': float(w.product.average_rating) if hasattr(w.product, 'average_rating') else 5.0,
+                'review_count': getattr(w.product, 'review_count', 0),
+                'primary_image': img_url,
+                'in_stock': bool(first_inv and first_inv.quantity_available > 0),
+                'inventory_id': str(first_inv.id) if first_inv else None,
                 'created_at': w.created_at,
-            }
-            for w in items
-        ]
+            })
         return Response(data)
 
 
