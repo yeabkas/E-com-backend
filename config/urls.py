@@ -12,16 +12,23 @@ from django.http import JsonResponse
 
 
 def debug_info(request):
-    """Diagnostic endpoint to troubleshoot deployment issues."""
-    from django.db import connection
+    """Diagnostic endpoint to troubleshoot deployment and persistence issues."""
+    from apps.users.models import User
+    from apps.catalog.models import Product
+    from apps.wishlist.models import WishlistItem
+
     db_engine = settings.DATABASES['default']['ENGINE']
+    db_host = settings.DATABASES['default'].get('HOST', 'unknown')
     db_name = settings.DATABASES['default'].get('NAME', 'unknown')
     session_engine = getattr(settings, 'SESSION_ENGINE', 'default (db)')
-    is_vercel = bool(settings.__dict__.get('is_production', False))
 
     # Check if session is active
     session_key = request.session.session_key if hasattr(request, 'session') else None
     session_user = request.session.get('_auth_user_id') if hasattr(request, 'session') else None
+
+    # Check request user
+    is_authenticated = request.user.is_authenticated if hasattr(request, 'user') else False
+    user_email = request.user.email if is_authenticated else None
 
     # Check JWT auth
     jwt_user = None
@@ -33,19 +40,39 @@ def debug_info(request):
     # Check cookies received
     cookies_received = list(request.COOKIES.keys())
 
+    # Live DB counts
+    try:
+        users_count = User.objects.count()
+        products_count = Product.objects.count()
+        wishlist_count = WishlistItem.objects.count()
+        db_connected = True
+    except Exception as e:
+        users_count = str(e)
+        products_count = str(e)
+        wishlist_count = str(e)
+        db_connected = False
+
     return JsonResponse({
         'db_engine': db_engine,
+        'db_host': str(db_host),
         'db_name': str(db_name),
+        'db_connected': db_connected,
+        'users_count': users_count,
+        'products_count': products_count,
+        'wishlist_count': wishlist_count,
         'session_engine': session_engine,
+        'session_save_every_request': getattr(settings, 'SESSION_SAVE_EVERY_REQUEST', False),
         'session_cookie_secure': getattr(settings, 'SESSION_COOKIE_SECURE', 'NOT SET'),
         'csrf_cookie_secure': getattr(settings, 'CSRF_COOKIE_SECURE', 'NOT SET'),
         'session_cookie_samesite': getattr(settings, 'SESSION_COOKIE_SAMESITE', 'NOT SET'),
-        'is_production': is_vercel,
+        'secure_proxy_ssl_header': getattr(settings, 'SECURE_PROXY_SSL_HEADER', None),
         'session_key': session_key,
         'session_user_id': session_user,
+        'is_authenticated': is_authenticated,
+        'user_email': user_email,
         'jwt_auth': jwt_user,
         'cookies_received': cookies_received,
-        'database_url_set': bool(settings.__dict__.get('database_url', None)) or 'DATABASE_URL' in __import__('os').environ,
+        'is_secure_request': request.is_secure(),
     })
 
 

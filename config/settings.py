@@ -95,15 +95,25 @@ def is_port_open(host, port):
     except Exception:
         return False
 
-# Database - Cloud PostgreSQL (DATABASE_URL), local PostgreSQL (port 5432), or SQLite fallback
+# Database - Cloud PostgreSQL (Neon), local PostgreSQL (port 5432), or SQLite fallback
+NEON_DATABASE_URL = 'postgresql://neondb_owner:npg_lP8Rh3XeGmID@ep-rapid-cake-b4nzwwnn-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require'
 database_url = os.environ.get('DATABASE_URL')
-if database_url:
+
+# In test mode or when USE_SQLITE is explicitly requested, use SQLite
+is_test_runner = 'pytest' in sys.modules or 'test' in sys.argv or bool(os.environ.get('USE_SQLITE'))
+
+if not is_test_runner and not database_url:
+    database_url = NEON_DATABASE_URL
+
+if database_url and not is_test_runner:
     try:
         import dj_database_url
+        # On serverless (Vercel), conn_max_age MUST be 0 to avoid broken sockets across container freezes
+        conn_max_age = 0 if os.environ.get('VERCEL') else 600
         DATABASES = {
             'default': dj_database_url.config(
                 default=database_url,
-                conn_max_age=600,
+                conn_max_age=conn_max_age,
                 conn_health_checks=True,
             )
         }
@@ -119,9 +129,10 @@ if database_url:
                 'PASSWORD': url.password,
                 'HOST': url.hostname,
                 'PORT': url.port or 5432,
+                'CONN_MAX_AGE': 0 if os.environ.get('VERCEL') else 600,
             }
         }
-elif is_port_open('localhost', 5432):
+elif is_port_open('localhost', 5432) and not is_test_runner:
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
@@ -133,17 +144,8 @@ elif is_port_open('localhost', 5432):
         }
     }
 else:
-    print("WARNING: PostgreSQL not detected on port 5432. Falling back to SQLite.", file=sys.stderr)
-    if os.environ.get('VERCEL'):
-        import shutil
-        tmp_db = Path('/tmp/db.sqlite3')
-        base_db = BASE_DIR / 'db.sqlite3'
-        if not tmp_db.exists() and base_db.exists():
-            shutil.copyfile(base_db, tmp_db)
-        db_file = tmp_db
-    else:
-        db_file = BASE_DIR / 'db.sqlite3'
-
+    print("Using SQLite database for local development/tests.", file=sys.stderr)
+    db_file = BASE_DIR / 'db.sqlite3'
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -233,9 +235,14 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     origin.strip() for origin in os.environ.get(
         'CSRF_TRUSTED_ORIGINS',
-        'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,https://*.vercel.app,https://*.onrender.com'
+        'http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173,https://*.vercel.app,https://*.onrender.com,https://e-com-backend-delta.vercel.app,https://all-purpose-ecom.vercel.app'
     ).split(',') if origin.strip()
 ]
+
+# Reverse proxy SSL header — CRITICAL for Vercel & Render
+# Tells Django that the request was HTTPS even when forwarded by the edge reverse-proxy over HTTP.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
 # Auth cookie (httpOnly refresh token)
 AUTH_REFRESH_COOKIE_NAME = 'refresh_token'
@@ -246,6 +253,7 @@ AUTH_COOKIE_SAMESITE = os.environ.get('AUTH_COOKIE_SAMESITE', 'None' if is_produ
 # Session & CSRF cookie settings — CRITICAL for Django admin on HTTPS/serverless (Vercel)
 # Without these, the admin panel gets 403 CSRF errors and loses sessions between clicks.
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'  # Explicit: persist sessions in the database, not memory/filesystem
+SESSION_SAVE_EVERY_REQUEST = True             # Refresh session in database on each request
 SESSION_COOKIE_SECURE = is_production        # Must be True on HTTPS or browser won't send session cookie
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'              # Lax is sufficient for same-domain admin navigation

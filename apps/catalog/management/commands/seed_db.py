@@ -17,9 +17,6 @@ class Command(BaseCommand):
             norm_email = admin_email.strip().lower()
             fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
             user = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
-            if user and user.id != fixed_id:
-                user.delete()
-                user = None
 
             if not user:
                 user = User(
@@ -37,7 +34,8 @@ class Command(BaseCommand):
                 user.save()
                 self.stdout.write(self.style.SUCCESS(f'Created admin user: {norm_email} (password: adminpassword123)'))
             else:
-                user.set_password('adminpassword123')
+                if not user.check_password('adminpassword123'):
+                    user.set_password('adminpassword123')
                 user.role = User.Role.ADMIN
                 user.is_superuser = True
                 user.is_staff = True
@@ -53,9 +51,6 @@ class Command(BaseCommand):
             norm_email = str(u['email']).strip().lower()
             fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
             demo_user = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
-            if demo_user and demo_user.id != fixed_id:
-                demo_user.delete()
-                demo_user = None
 
             if not demo_user:
                 demo_user = User(
@@ -73,8 +68,9 @@ class Command(BaseCommand):
                 demo_user.save()
                 self.stdout.write(self.style.SUCCESS(f"Created {u['role']} user: {norm_email}"))
             else:
-                demo_user.set_password(u['password'])
-                demo_user.save()
+                if not demo_user.check_password(u['password']):
+                    demo_user.set_password(u['password'])
+                    demo_user.save()
 
         # 2. Create Dummy Customers
         customer_count = 5
