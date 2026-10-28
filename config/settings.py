@@ -339,6 +339,10 @@ else:
         }
     }
 
+# Currency configuration
+DEFAULT_CURRENCY = os.environ.get('DEFAULT_CURRENCY', 'ETB')
+SUPPORTED_CURRENCIES = ['ETB', 'USD']
+
 CELERY_BEAT_SCHEDULE = {
     # Hourly sweep: cancel stale unpaid orders, expire abandoned anonymous carts.
     'hourly-order-and-cart-cleanup': {

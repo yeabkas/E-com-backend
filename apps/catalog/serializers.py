@@ -135,6 +135,7 @@ class InventorySerializer(serializers.ModelSerializer):
 class ProductListSerializer(serializers.ModelSerializer):
     """Optimized serializer for listing products."""
     category_name = serializers.CharField(source='category.name', read_only=True)
+    currency = serializers.CharField(default='ETB', read_only=True)
     primary_image = serializers.SerializerMethodField()
     images = ProductImageSerializer(many=True, read_only=True)
     seller = SellerInfoSerializer(read_only=True)
@@ -143,7 +144,7 @@ class ProductListSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'slug', 'category', 'category_name',
-            'base_price', 'primary_image', 'images', 'average_rating', 'review_count', 'sales_count',
+            'base_price', 'currency', 'primary_image', 'images', 'average_rating', 'review_count', 'sales_count',
             'seller', 'ranking'
         ]
 
@@ -166,6 +167,7 @@ class ProductListSerializer(serializers.ModelSerializer):
 class ProductDetailSerializer(serializers.ModelSerializer):
     """Detailed serializer for a single product."""
     category = CategorySerializer(read_only=True)
+    currency = serializers.CharField(default='ETB', read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
     variants = InventorySerializer(many=True, read_only=True)
     seller = SellerInfoSerializer(read_only=True)
@@ -174,12 +176,13 @@ class ProductDetailSerializer(serializers.ModelSerializer):
         model = Product
         fields = [
             'id', 'name', 'slug', 'category', 'description',
-            'base_price', 'average_rating', 'review_count', 'sales_count',
+            'base_price', 'currency', 'average_rating', 'review_count', 'sales_count',
             'images', 'variants', 'seller', 'ranking', 'created_at'
         ]
 
 
 class ProductAdminSerializer(serializers.ModelSerializer):
+    currency = serializers.CharField(default='ETB', read_only=True)
     images = ProductImageSerializer(many=True, read_only=True)
     seller_info = SellerInfoSerializer(source='seller', read_only=True)
     seller_id = serializers.PrimaryKeyRelatedField(

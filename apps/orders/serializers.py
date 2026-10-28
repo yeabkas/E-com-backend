@@ -27,7 +27,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'id', 'order_number', 'user', 'status', 'items', 'status_history', 
             'shipping_name', 'shipping_street_line_1', 'shipping_street_line_2',
             'shipping_city', 'shipping_state_province', 'shipping_postal_code', 'shipping_country_code',
-            'subtotal', 'tax_amount', 'shipping_amount', 'total_amount', 'shipping_method_name',
+            'currency', 'subtotal', 'tax_amount', 'shipping_amount', 'total_amount', 'shipping_method_name',
             'coupon_code', 'discount_amount',
             'created_at', 'updated_at'
         ]
