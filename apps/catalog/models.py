@@ -5,12 +5,23 @@ from django.utils.text import slugify
 
 
 class Category(models.Model):
+    APPROVAL_CHOICES = [
+        ('APPROVED', 'Approved'),
+        ('PENDING', 'Pending Approval'),
+        ('REJECTED', 'Rejected'),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=100)
     slug = models.SlugField(max_length=120, unique=True)
     parent = models.ForeignKey(
         'self', on_delete=models.SET_NULL, null=True, blank=True, related_name='subcategories'
     )
+    owner = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='owned_categories'
+    )
+    approval_status = models.CharField(max_length=20, choices=APPROVAL_CHOICES, default='APPROVED')
+    rejection_reason = models.TextField(blank=True, default='')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -33,6 +44,46 @@ class Category(models.Model):
                 counter += 1
             self.slug = slug
         super().save(*args, **kwargs)
+
+
+class CategoryChangeRequest(models.Model):
+    """
+    Tracks requested changes (edit/delete) to approved categories
+    by non-admin users, pending admin approval.
+    """
+    CHANGE_TYPES = [
+        ('EDIT', 'Edit'),
+        ('DELETE', 'Delete'),
+    ]
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    category = models.ForeignKey(Category, on_delete=models.CASCADE, related_name='change_requests')
+    requested_by = models.ForeignKey(
+        'users.User', on_delete=models.CASCADE, related_name='category_change_requests'
+    )
+    change_type = models.CharField(max_length=10, choices=CHANGE_TYPES)
+    # For EDIT: store the proposed changes as JSON
+    proposed_changes = models.JSONField(default=dict, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    rejection_reason = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='reviewed_change_requests'
+    )
+
+    class Meta:
+        db_table = 'category_change_requests'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.change_type} request for {self.category.name} by {self.requested_by}"
 
 
 class Product(models.Model):

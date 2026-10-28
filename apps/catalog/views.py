@@ -4,9 +4,11 @@ from django.core.cache import cache
 from django.db import transaction
 import django_filters
 from django.db.models import Q
-from .models import Category, Product
+from django.utils import timezone
+from .models import Category, CategoryChangeRequest, Product
 from .serializers import (
-    CategorySerializer, ProductListSerializer, ProductDetailSerializer,
+    CategorySerializer, CategoryChangeRequestSerializer,
+    ProductListSerializer, ProductDetailSerializer,
     RestockSubscriptionSerializer, SellerInfoSerializer
 )
 from apps.users.models import User
@@ -31,8 +33,8 @@ class CategoryListView(generics.ListCreateAPIView):
     pagination_class = None
 
     def get_queryset(self):
-        # Return only root categories (no parent) that are active
-        return Category.objects.filter(parent__isnull=True, is_active=True)
+        # Return only root categories (no parent) that are active AND approved
+        return Category.objects.filter(parent__isnull=True, is_active=True, approval_status='APPROVED')
 
     def list(self, request, *args, **kwargs):
         cache_key = 'catalog:categories:v1'
@@ -529,19 +531,13 @@ class AdminInventoryViewSet(viewsets.ModelViewSet):
 
 class AdminCategoryViewSet(viewsets.ModelViewSet):
     """
-    CRUD API for Categories.
-    Admins & Sellers can list, create, update, and delete categories.
+    CRUD API for Categories with approval workflow.
+    Admins: full immediate CRUD.
+    Sellers: create goes to PENDING; edit/delete create change requests.
     """
     serializer_class = CategorySerializer
     pagination_class = None
     permission_classes = [IsAdminOrSeller]
-
-    def get_permissions(self):
-        # Sellers may create categories while adding products, but the shared
-        # taxonomy itself can only be edited or removed by store admins.
-        if self.action in ('update', 'partial_update', 'destroy'):
-            return [IsStoreAdmin()]
-        return super().get_permissions()
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'slug']
     ordering_fields = ['name', 'created_at']
@@ -556,9 +552,23 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = Category.objects.all().order_by('name')
+        user = self.request.user
+
+        # Sellers see: all approved categories + their own pending/rejected ones
+        if getattr(user, 'role', None) == 'SELLER':
+            qs = qs.filter(
+                Q(approval_status='APPROVED') | Q(owner=user)
+            )
+
         active_only = self.request.query_params.get('active_only')
         if active_only in ('1', 'true', 'yes'):
             qs = qs.filter(is_active=True)
+
+        # Filter by approval status if requested (for admin tab filtering)
+        status_filter = self.request.query_params.get('approval_status')
+        if status_filter:
+            qs = qs.filter(approval_status=status_filter)
+
         return qs
 
     def create(self, request, *args, **kwargs):
@@ -576,6 +586,9 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
             except (Category.DoesNotExist, ValueError):
                 return Response({'error': 'Parent category not found.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        user = request.user
+        is_admin = getattr(user, 'role', None) == 'ADMIN'
+
         existing = Category.objects.filter(name__iexact=name, parent=parent).first()
         if existing:
             if not existing.is_active:
@@ -584,19 +597,210 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
             cache.delete('catalog:categories:v1')
             return Response(CategorySerializer(existing).data, status=status.HTTP_200_OK)
 
-        category = Category(name=name, parent=parent)
+        category = Category(
+            name=name,
+            parent=parent,
+            owner=None if is_admin else user,
+            approval_status='APPROVED' if is_admin else 'PENDING',
+        )
         category.save()
-        cache.delete('catalog:categories:v1')
-        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+        if is_admin:
+            cache.delete('catalog:categories:v1')
+            return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+        else:
+            return Response({
+                **CategorySerializer(category).data,
+                'message': 'Category submitted for admin approval.',
+            }, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        if not self._auth_ok(request):
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        user = request.user
+        is_admin = getattr(user, 'role', None) == 'ADMIN'
+
+        if is_admin:
+            # Admin edits take effect immediately
+            response = super().update(request, *args, **kwargs)
+            cache.delete('catalog:categories:v1')
+            return response
+
+        # Seller: create a change request instead of modifying directly
+        category = self.get_object()
+        proposed = {}
+        for field in ('name', 'parent', 'is_active'):
+            if field in request.data:
+                proposed[field] = request.data[field]
+
+        if not proposed:
+            return Response({'error': 'No changes proposed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        change_req = CategoryChangeRequest.objects.create(
+            category=category,
+            requested_by=user,
+            change_type='EDIT',
+            proposed_changes=proposed,
+        )
+        return Response({
+            'message': 'Edit request submitted for admin approval.',
+            'change_request_id': str(change_req.id),
+        }, status=status.HTTP_202_ACCEPTED)
+
+    def partial_update(self, request, *args, **kwargs):
+        # Route PATCH through the same approval logic as PUT
+        return self.update(request, *args, **kwargs)
 
     def destroy(self, request, *args, **kwargs):
         if not self._auth_ok(request):
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
-        category = self.get_object()
-        if category.products.exists():
-            category.is_active = False
-            category.save()
-            return Response({'message': 'Category has associated products and was marked inactive.', 'is_active': False}, status=status.HTTP_200_OK)
-        category.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
+        user = request.user
+        is_admin = getattr(user, 'role', None) == 'ADMIN'
+        category = self.get_object()
+
+        if is_admin:
+            # Admin deletes take effect immediately
+            if category.products.exists():
+                category.is_active = False
+                category.save()
+                cache.delete('catalog:categories:v1')
+                return Response({'message': 'Category has associated products and was marked inactive.', 'is_active': False}, status=status.HTTP_200_OK)
+            category.delete()
+            cache.delete('catalog:categories:v1')
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Seller: create a delete change request
+        change_req = CategoryChangeRequest.objects.create(
+            category=category,
+            requested_by=user,
+            change_type='DELETE',
+        )
+        return Response({
+            'message': 'Delete request submitted for admin approval.',
+            'change_request_id': str(change_req.id),
+        }, status=status.HTTP_202_ACCEPTED)
+
+
+class CategoryApprovalView(APIView):
+    """Admin-only: approve or reject a pending category creation."""
+    permission_classes = [IsAdminOrSeller]
+
+    def _require_admin(self, request):
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated or getattr(user, 'role', None) != 'ADMIN':
+            return False
+        return True
+
+    def post(self, request, pk):
+        """Approve a pending category."""
+        if not self._require_admin(request):
+            return Response({'error': 'Only administrators can approve categories.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            category = Category.objects.get(id=pk)
+        except Category.DoesNotExist:
+            return Response({'error': 'Category not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        category.approval_status = 'APPROVED'
+        category.rejection_reason = ''
+        category.save()
+        cache.delete('catalog:categories:v1')
+        return Response(CategorySerializer(category).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        """Reject a pending category with optional reason."""
+        if not self._require_admin(request):
+            return Response({'error': 'Only administrators can reject categories.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            category = Category.objects.get(id=pk)
+        except Category.DoesNotExist:
+            return Response({'error': 'Category not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        reason = (request.data.get('reason') or '').strip()
+        category.approval_status = 'REJECTED'
+        category.rejection_reason = reason
+        category.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_200_OK)
+
+
+class ChangeRequestListView(generics.ListAPIView):
+    """Admin-only: list all category change requests."""
+    serializer_class = CategoryChangeRequestSerializer
+    permission_classes = [IsAdminOrSeller]
+    pagination_class = None
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = CategoryChangeRequest.objects.select_related('category', 'requested_by', 'reviewed_by')
+        if getattr(user, 'role', None) == 'SELLER':
+            # Sellers only see their own change requests
+            qs = qs.filter(requested_by=user)
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return qs
+
+
+class ChangeRequestApprovalView(APIView):
+    """Admin-only: approve or reject a category change request (edit/delete)."""
+    permission_classes = [IsAdminOrSeller]
+
+    def _require_admin(self, request):
+        user = getattr(request, 'user', None)
+        if not user or not user.is_authenticated or getattr(user, 'role', None) != 'ADMIN':
+            return False
+        return True
+
+    def post(self, request, pk):
+        """Approve a change request — apply the proposed changes."""
+        if not self._require_admin(request):
+            return Response({'error': 'Only administrators can approve change requests.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            cr = CategoryChangeRequest.objects.select_related('category').get(id=pk)
+        except CategoryChangeRequest.DoesNotExist:
+            return Response({'error': 'Change request not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if cr.status != 'PENDING':
+            return Response({'error': 'This change request has already been reviewed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if cr.change_type == 'EDIT':
+            for key, val in cr.proposed_changes.items():
+                if key in ('name', 'is_active'):
+                    setattr(cr.category, key, val)
+                elif key == 'parent':
+                    cr.category.parent_id = val
+            cr.category.save()
+        elif cr.change_type == 'DELETE':
+            if cr.category.products.exists():
+                cr.category.is_active = False
+                cr.category.save()
+            else:
+                cr.category.delete()
+
+        cr.status = 'APPROVED'
+        cr.reviewed_by = request.user
+        cr.reviewed_at = timezone.now()
+        cr.save()
+        cache.delete('catalog:categories:v1')
+        return Response(CategoryChangeRequestSerializer(cr).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        """Reject a change request with optional reason."""
+        if not self._require_admin(request):
+            return Response({'error': 'Only administrators can reject change requests.'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            cr = CategoryChangeRequest.objects.get(id=pk)
+        except CategoryChangeRequest.DoesNotExist:
+            return Response({'error': 'Change request not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if cr.status != 'PENDING':
+            return Response({'error': 'This change request has already been reviewed.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        reason = (request.data.get('reason') or '').strip()
+        cr.status = 'REJECTED'
+        cr.rejection_reason = reason
+        cr.reviewed_by = request.user
+        cr.reviewed_at = timezone.now()
+        cr.save()
+        return Response(CategoryChangeRequestSerializer(cr).data, status=status.HTTP_200_OK)

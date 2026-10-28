@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Category, Product, ProductImage, Inventory, RestockSubscription
+from .models import Category, CategoryChangeRequest, Product, ProductImage, Inventory, RestockSubscription
 from apps.users.models import User
 
 
@@ -45,10 +45,15 @@ class CategorySerializer(serializers.ModelSerializer):
     subcategories = serializers.SerializerMethodField(read_only=True)
     parent_name = serializers.CharField(source='parent.name', read_only=True)
     product_count = serializers.SerializerMethodField(read_only=True)
+    owner_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = Category
-        fields = ['id', 'name', 'slug', 'parent', 'parent_name', 'subcategories', 'product_count', 'is_active']
+        fields = [
+            'id', 'name', 'slug', 'parent', 'parent_name', 'subcategories',
+            'product_count', 'is_active', 'approval_status', 'rejection_reason',
+            'owner', 'owner_name'
+        ]
         read_only_fields = ['id', 'slug']
 
     def get_subcategories(self, obj):
@@ -60,6 +65,39 @@ class CategorySerializer(serializers.ModelSerializer):
         if hasattr(obj, 'products'):
             return obj.products.count()
         return 0
+
+    def get_owner_name(self, obj):
+        if obj.owner:
+            name = f"{obj.owner.first_name} {obj.owner.last_name}".strip()
+            return name if name else obj.owner.email
+        return None
+
+
+class CategoryChangeRequestSerializer(serializers.ModelSerializer):
+    """Serializer for category change requests (edit/delete) pending admin approval."""
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    requested_by_name = serializers.SerializerMethodField(read_only=True)
+    reviewed_by_name = serializers.SerializerMethodField(read_only=True)
+
+    class Meta:
+        model = CategoryChangeRequest
+        fields = [
+            'id', 'category', 'category_name', 'change_type', 'proposed_changes',
+            'status', 'rejection_reason', 'requested_by', 'requested_by_name',
+            'created_at', 'reviewed_at', 'reviewed_by', 'reviewed_by_name'
+        ]
+        read_only_fields = ['id', 'requested_by', 'created_at', 'reviewed_at', 'reviewed_by']
+
+    def get_requested_by_name(self, obj):
+        u = obj.requested_by
+        name = f"{u.first_name} {u.last_name}".strip()
+        return name if name else u.email
+
+    def get_reviewed_by_name(self, obj):
+        if obj.reviewed_by:
+            name = f"{obj.reviewed_by.first_name} {obj.reviewed_by.last_name}".strip()
+            return name if name else obj.reviewed_by.email
+        return None
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
