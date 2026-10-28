@@ -50,3 +50,4 @@ htmlcov/
 # IDEs
 .vscode/
 .idea/
+.vercel
