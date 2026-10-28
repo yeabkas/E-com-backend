@@ -1,5 +1,7 @@
 from rest_framework import generics, permissions, filters
 from django_filters.rest_framework import DjangoFilterBackend
+from django.core.cache import cache
+from django.db import transaction
 import django_filters
 from django.db.models import Q
 from .models import Category, Product
@@ -8,7 +10,9 @@ from .serializers import (
     RestockSubscriptionSerializer, SellerInfoSerializer
 )
 from apps.users.models import User
+from apps.users.permissions import IsStoreAdmin
 from rest_framework.permissions import AllowAny
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.views import APIView
 import csv
 from django.utils.text import slugify as _slugify
@@ -29,6 +33,15 @@ class CategoryListView(generics.ListCreateAPIView):
     def get_queryset(self):
         # Return only root categories (no parent) that are active
         return Category.objects.filter(parent__isnull=True, is_active=True)
+
+    def list(self, request, *args, **kwargs):
+        cache_key = 'catalog:categories:v1'
+        data = cache.get(cache_key)
+        if data is None:
+            queryset = self.filter_queryset(self.get_queryset())
+            data = list(CategorySerializer(queryset, many=True).data)
+            cache.set(cache_key, data, timeout=300)
+        return Response(data)
 
     def create(self, request, *args, **kwargs):
         user = getattr(request, 'user', None)
@@ -51,10 +64,12 @@ class CategoryListView(generics.ListCreateAPIView):
             if not existing.is_active:
                 existing.is_active = True
                 existing.save()
+            cache.delete('catalog:categories:v1')
             return Response(CategorySerializer(existing).data, status=status.HTTP_200_OK)
 
         category = Category(name=name, parent=parent)
         category.save()
+        cache.delete('catalog:categories:v1')
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
 
 
@@ -89,14 +104,28 @@ class ProductListView(generics.ListAPIView):
 
         search = self.request.query_params.get('search')
         if search:
-            qs = qs.filter(Q(name__icontains=search) | Q(description__icontains=search) | Q(category__name__icontains=search))
             from django.db import connection
             if connection.vendor == 'postgresql':
-                from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
-                vector = SearchVector('name', weight='A') + SearchVector('description', weight='B')
-                rank = SearchRank(vector, SearchQuery(search))
-                qs = qs.annotate(rank=rank).order_by('-rank')
-            return qs
+                # The generated tsvector column and GIN index are created in migration 0009.
+                # Include category-name matches for parity with the SQLite fallback.
+                qs = qs.extra(
+                    select={
+                        'rank': "ts_rank(search_vector, plainto_tsquery('simple', %s))",
+                    },
+                    select_params=[search],
+                    where=[
+                        "(search_vector @@ plainto_tsquery('simple', %s) "
+                        "OR category_id IN (SELECT id FROM categories WHERE name ILIKE %s))"
+                    ],
+                    params=[search, f'%{search}%'],
+                    order_by=['-rank'],
+                )
+                return qs
+            return qs.filter(
+                Q(name__icontains=search)
+                | Q(description__icontains=search)
+                | Q(category__name__icontains=search)
+            )
 
         ranked_only = self.request.query_params.get('ranked_only')
         if ranked_only:
@@ -116,7 +145,7 @@ class ProductListView(generics.ListAPIView):
         return qs
 
     search_fields = ['name', 'description']
-    ordering_fields = ['base_price', 'created_at', 'average_rating', 'ranking']
+    ordering_fields = ['base_price', 'created_at', 'average_rating', 'ranking', 'sales_count']
 
 
 class SellerListView(generics.ListAPIView):
@@ -172,7 +201,9 @@ class ProductDetailView(generics.RetrieveAPIView):
         # Include inactive products if user is admin, else only active
         user = self.request.user
         qs = Product.objects.select_related('category', 'seller').prefetch_related('images', 'variants')
-        if user.is_authenticated and getattr(user, 'is_staff', False):
+        if user.is_authenticated and (
+            getattr(user, 'is_staff', False) or getattr(user, 'role', None) == 'ADMIN'
+        ):
             return qs
         return qs.filter(is_active=True)
 
@@ -203,40 +234,106 @@ class AdminProductImportView(APIView):
         upload = request.FILES.get('file')
         if not upload:
             return Response({'error': 'file is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > 5 * 1024 * 1024:
+            return Response({'error': 'CSV file must be 5 MB or smaller.'}, status=status.HTTP_400_BAD_REQUEST)
         text = upload.read().decode('utf-8', errors='replace')
         reader = csv.DictReader(text.splitlines())
         seller = request.user if getattr(request.user, 'role', None) == 'SELLER' else None
         created = 0
+        inventory_created = 0
+        inventory_updated = 0
         errors = []
         for idx, row in enumerate(reader, start=2):
+            row_created = 0
+            row_inventory_created = 0
+            row_inventory_updated = 0
             try:
-                name = (row.get('name') or '').strip()
-                if not name:
-                    raise ValueError('missing name')
-                cat_name = (row.get('category') or '').strip()
-                if cat_name:
-                    cat = Category.objects.filter(is_active=True).filter(name__iexact=cat_name).first()
-                    if cat is None:
-                        cat = Category.objects.create(name=cat_name)
-                else:
-                    cat = Category.objects.filter(is_active=True).first()
-                    if cat is None:
-                        cat = Category.objects.create(name='General')
-                price_raw = row.get('price') or row.get('base_price') or '0'
-                base_price = DDecimal(price_raw)
-                is_active_str = (row.get('is_active') or 'true').strip().lower()
-                product = Product.objects.create(
-                    name=name,
-                    description=(row.get('description') or '').strip(),
-                    base_price=base_price,
-                    category=cat,
-                    is_active=is_active_str in ('1', 'true', 'yes'),
-                    seller=seller,
-                )
-                created += 1
+                with transaction.atomic():
+                    product_slug = (row.get('product_slug') or row.get('slug') or '').strip()
+                    sku = (row.get('sku') or '').strip()
+                    quantity_raw = row.get('quantity')
+                    if quantity_raw in (None, ''):
+                        quantity_raw = row.get('stock')
+                    if product_slug and quantity_raw in (None, ''):
+                        raise ValueError('quantity is required when product_slug is provided')
+                    quantity = int(quantity_raw or 0)
+                    if quantity < 0:
+                        raise ValueError('quantity cannot be negative')
+                    threshold_raw = row.get('low_stock_threshold')
+                    threshold = int(threshold_raw) if threshold_raw not in (None, '') else None
+                    if threshold is not None and threshold < 0:
+                        raise ValueError('low_stock_threshold cannot be negative')
+                    variant = (row.get('variant') or row.get('variant_label') or 'Default').strip()
+
+                    product = None
+                    if product_slug:
+                        # Inventory-only rows update an existing product's variant.
+                        product_qs = Product.objects.filter(slug=product_slug)
+                        if seller is not None:
+                            product_qs = product_qs.filter(seller=seller)
+                        product = product_qs.first()
+                        if product is None:
+                            raise ValueError(f'product_slug "{product_slug}" not found')
+                        if not sku:
+                            raise ValueError('sku is required when product_slug is provided')
+                    else:
+                        name = (row.get('name') or '').strip()
+                        if not name:
+                            raise ValueError('missing name or product_slug')
+                        cat_name = (row.get('category') or '').strip()
+                        if cat_name:
+                            cat = Category.objects.filter(is_active=True).filter(name__iexact=cat_name).first()
+                            if cat is None:
+                                cat = Category.objects.create(name=cat_name)
+                        else:
+                            cat = Category.objects.filter(is_active=True).first()
+                            if cat is None:
+                                cat = Category.objects.create(name='General')
+                        price_raw = row.get('price') or row.get('base_price') or '0'
+                        base_price = DDecimal(price_raw)
+                        is_active_str = (row.get('is_active') or 'true').strip().lower()
+                        product = Product.objects.create(
+                            name=name,
+                            description=(row.get('description') or '').strip(),
+                            base_price=base_price,
+                            category=cat,
+                            is_active=is_active_str in ('1', 'true', 'yes'),
+                            seller=seller,
+                        )
+                        row_created += 1
+
+                    if sku:
+                        inventory, inv_created = Inventory.objects.get_or_create(
+                            sku=sku,
+                            defaults={
+                                'product': product,
+                                'variant_label': variant or 'Default',
+                                'quantity_available': quantity,
+                                'low_stock_threshold': threshold if threshold is not None else 5,
+                            },
+                        )
+                        if not inv_created and inventory.product_id != product.id:
+                            raise ValueError(f'sku "{sku}" belongs to another product')
+                        if not inv_created:
+                            inventory.quantity_available = quantity
+                            inventory.variant_label = variant or inventory.variant_label
+                            if threshold is not None:
+                                inventory.low_stock_threshold = threshold
+                            inventory.save()
+                            row_inventory_updated += 1
+                        else:
+                            row_inventory_created += 1
+                created += row_created
+                inventory_created += row_inventory_created
+                inventory_updated += row_inventory_updated
             except Exception as e:
                 errors.append({'row': idx, 'error': str(e)})
-        return Response({'created': created, 'errors': errors})
+        return Response({
+            'created': created,
+            'inventory_created': inventory_created,
+            'inventory_updated': inventory_updated,
+            'errors': errors,
+        })
 
 from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action
@@ -247,17 +344,21 @@ from .models import Inventory, ProductImage
 
 class IsAdminOrSeller(permissions.BasePermission):
     def has_permission(self, request, view):
+        user = request.user
         return bool(
-            request.user
-            and request.user.is_authenticated
-            and request.user.role in ('ADMIN', 'SELLER')
+            user
+            and user.is_authenticated
+            and (
+                getattr(user, 'role', None) in ('ADMIN', 'SELLER')
+                or getattr(user, 'is_staff', False)
+            )
         )
 
 
 class AdminProductViewSet(viewsets.ModelViewSet):
     """Admin API for Products. Admins see all; sellers see and manage only their own."""
     serializer_class = ProductAdminSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAdminOrSeller]
 
     def _auth_ok(self, request):
         user = getattr(request, 'user', None)
@@ -305,6 +406,13 @@ class AdminProductViewSet(viewsets.ModelViewSet):
             serializer.save(seller=self.request.user)
         else:
             serializer.save()
+
+    def perform_update(self, serializer):
+        if getattr(self.request.user, 'role', None) == 'SELLER':
+            new_seller = serializer.validated_data.get('seller', serializer.instance.seller)
+            if new_seller is None or new_seller.id != self.request.user.id:
+                raise permissions.PermissionDenied('You cannot transfer product ownership.')
+        serializer.save()
 
     @action(detail=True, methods=['post'], url_path='images')
     def upload_images(self, request, pk=None):
@@ -385,7 +493,7 @@ class AdminProductViewSet(viewsets.ModelViewSet):
 class AdminInventoryViewSet(viewsets.ModelViewSet):
     """Admin API for Inventory. Sellers see only inventory of their own products."""
     serializer_class = InventoryAdminSerializer
-    permission_classes = [AllowAny]
+    permission_classes = [IsAdminOrSeller]
 
     def _auth_ok(self, request):
         user = getattr(request, 'user', None)
@@ -408,8 +516,14 @@ class AdminInventoryViewSet(viewsets.ModelViewSet):
         if getattr(self.request.user, 'role', None) == 'SELLER':
             product = serializer.validated_data.get('product')
             if product is None or product.seller_id != self.request.user.id:
-                # pyrefly: ignore [missing-attribute]
-                raise permissions.PermissionDenied('You can only add inventory to your own products.')
+                raise PermissionDenied('You can only add inventory to your own products.')
+        serializer.save()
+
+    def perform_update(self, serializer):
+        if getattr(self.request.user, 'role', None) == 'SELLER':
+            product = serializer.validated_data.get('product', serializer.instance.product)
+            if product is None or product.seller_id != self.request.user.id:
+                raise PermissionDenied('You can only update inventory for your own products.')
         serializer.save()
 
 
@@ -420,7 +534,14 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
     """
     serializer_class = CategorySerializer
     pagination_class = None
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsAdminOrSeller]
+
+    def get_permissions(self):
+        # Sellers may create categories while adding products, but the shared
+        # taxonomy itself can only be edited or removed by store admins.
+        if self.action in ('update', 'partial_update', 'destroy'):
+            return [IsStoreAdmin()]
+        return super().get_permissions()
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'slug']
     ordering_fields = ['name', 'created_at']
@@ -460,10 +581,12 @@ class AdminCategoryViewSet(viewsets.ModelViewSet):
             if not existing.is_active:
                 existing.is_active = True
                 existing.save()
+            cache.delete('catalog:categories:v1')
             return Response(CategorySerializer(existing).data, status=status.HTTP_200_OK)
 
         category = Category(name=name, parent=parent)
         category.save()
+        cache.delete('catalog:categories:v1')
         return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
 
     def destroy(self, request, *args, **kwargs):

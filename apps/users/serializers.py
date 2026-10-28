@@ -51,9 +51,6 @@ class LoginSerializer(serializers.Serializer):
         if user is None:
             raise serializers.ValidationError('Invalid email or password.')
 
-        if user.is_suspended:
-            raise serializers.ValidationError('This account has been suspended.')
-
         if not user.is_active:
             raise serializers.ValidationError('This account is not active.')
 
@@ -118,3 +115,16 @@ class AddressSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['user'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class AdminUserSerializer(serializers.ModelSerializer):
+    full_name = serializers.ReadOnlyField()
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'full_name', 'role',
+            'is_verified', 'is_suspended', 'is_active', 'is_staff',
+            'last_login_at', 'created_at',
+        ]
+        read_only_fields = ['id', 'email', 'full_name', 'last_login_at', 'created_at']

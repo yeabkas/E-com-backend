@@ -1,6 +1,7 @@
 import uuid
 from decimal import Decimal
 from django.db import models
+from django.db.models.functions import Greatest
 from django.conf import settings
 from apps.users.models import Address
 
@@ -55,7 +56,7 @@ class Order(models.Model):
         return f"Order {self.id} - {self.user.email}"
 
     def transition_to(self, new_status):
-        """Enforce the allowed state machine and update product sales counters."""
+        """Enforce the allowed state machine and keep stock/sales/coupon data consistent."""
         transitions = {
             self.OrderStatus.PENDING: {self.OrderStatus.PAID, self.OrderStatus.CANCELLED},
             self.OrderStatus.PAID: {self.OrderStatus.PROCESSING, self.OrderStatus.SHIPPED, self.OrderStatus.CANCELLED},
@@ -68,22 +69,42 @@ class Order(models.Model):
         if new_status not in transitions.get(self.status, set()):
             raise ValueError(f'Invalid transition from {self.status} to {new_status}')
 
-        from apps.catalog.models import Product
+        from apps.catalog.models import Product, Inventory
+        previous_status = self.status
+
         if new_status == self.OrderStatus.PAID:
             for item in self.items.all():
                 if item.product_id:
                     Product.objects.filter(id=item.product_id).update(
                         sales_count=models.F('sales_count') + item.quantity
                     )
-        elif new_status == self.OrderStatus.CANCELLED and self.status == self.OrderStatus.PAID:
+        elif new_status == self.OrderStatus.CANCELLED:
+            # Release stock that was reserved at checkout, including paid orders
+            # cancelled by an admin before shipment.
             for item in self.items.all():
-                if item.product_id:
+                inv = Inventory.objects.filter(sku=item.sku).first()
+                if inv is not None:
+                    inv.quantity_available += item.quantity
+                    inv.quantity_reserved = max(inv.quantity_reserved - item.quantity, 0)
+                    inv.save(update_fields=['quantity_available', 'quantity_reserved'])
+                if previous_status in (self.OrderStatus.PAID, self.OrderStatus.PROCESSING) and item.product_id:
                     Product.objects.filter(id=item.product_id).update(
-                        sales_count=models.F('sales_count') - item.quantity
+                        sales_count=Greatest(
+                            models.F('sales_count') - item.quantity,
+                            models.Value(0),
+                        )
                     )
+            # A failed/abandoned order must not consume coupon usage limits.
+            from apps.promotions.models import CouponUsage
+            CouponUsage.objects.filter(order=self).delete()
 
         self.status = new_status
         self.save(update_fields=['status', 'updated_at'])
+        OrderStatusHistory.objects.create(order=self, status=new_status)
+
+    @property
+    def order_number(self):
+        return str(self.id).split('-')[0].upper()
 
     def populate_shipping_snapshot(self, address):
         """Populates the denormalized address fields based on an Address instance."""
@@ -124,6 +145,20 @@ class OrderItem(models.Model):
     @property
     def total_price(self):
         return self.quantity * self.unit_price
+
+
+class OrderStatusHistory(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='status_history')
+    status = models.CharField(max_length=20, choices=Order.OrderStatus.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'order_status_history'
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f'{self.order_id} -> {self.status}'
 
 
 class ShippingMethod(models.Model):

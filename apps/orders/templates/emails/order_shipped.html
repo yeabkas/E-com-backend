@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#1f2430;">
+  <div style="max-width:620px;margin:24px auto;background:#ffffff;border-radius:12px;overflow:hidden;">
+    <div style="background:#4f46e5;color:#ffffff;padding:28px 32px;">
+      <div style="font-size:13px;letter-spacing:2px;opacity:.7;">GASH E-COM</div>
+      <h1 style="margin:8px 0 0;font-size:24px;">Your order has shipped</h1>
+      <p style="margin:8px 0 0;opacity:.8;">Order {{ order_number }}</p>
+    </div>
+    <div style="padding:28px 32px;">
+      <p style="margin-top:0;">Hi {{ order.shipping_name|default:order.user.first_name|default:"there" }},</p>
+      <p>Good news — your order is on its way.</p>
+      <div style="background:#f9fafb;border-radius:8px;padding:16px;margin:20px 0;">
+        <p style="margin:0 0 6px;"><strong>Order:</strong> {{ order_number }}</p>
+        <p style="margin:0;"><strong>Shipping method:</strong> {{ order.shipping_method_name|default:"Standard shipping" }}</p>
+      </div>
+      <a href="{{ frontend_url }}/orders/{{ order.id }}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;">Track your order</a>
+      <p style="color:#9ca3af;font-size:12px;margin-top:28px;">This is an automated message from GASH E-COM.</p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,4 +1,4 @@
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -7,12 +7,14 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from django.utils import timezone
 from django.conf import settings as django_settings
 from .models import User, Address
+from .permissions import IsStoreAdmin
 from .serializers import (
     RegisterSerializer,
     LoginSerializer,
     UserSerializer,
     UserUpdateSerializer,
     AddressSerializer,
+    AdminUserSerializer,
 )
 
 
@@ -63,6 +65,11 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
+        if getattr(user, 'is_suspended', False):
+            return Response(
+                {'error': 'This account has been suspended. Contact support for help.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         # Update last login timestamp
         user.last_login_at = timezone.now()
@@ -184,6 +191,20 @@ class CookieTokenRefreshView(TokenRefreshView):
             cookie = request.COOKIES.get(django_settings.AUTH_REFRESH_COOKIE_NAME)
             if cookie:
                 request.data = {**request.data, 'refresh': cookie}
+        raw_refresh = request.data.get('refresh')
+        if raw_refresh:
+            try:
+                user_id = RefreshToken(raw_refresh).payload.get('user_id')
+                user = User.objects.filter(id=user_id).only('is_suspended').first()
+                if user is not None and user.is_suspended:
+                    resp = Response(
+                        {'error': 'This account has been suspended.'},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                    _clear_refresh_cookie(resp)
+                    return resp
+            except (InvalidToken, TokenError, ValueError):
+                pass
         try:
             response = super().post(request, *args, **kwargs)
         except (InvalidToken, TokenError) as e:
@@ -300,3 +321,27 @@ class AddressDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return Address.objects.filter(user=self.request.user)
+
+
+class AdminUserListView(generics.ListAPIView):
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsStoreAdmin]
+    queryset = User.objects.all().order_by('-created_at')
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['email', 'first_name', 'last_name']
+    ordering_fields = ['created_at', 'role', 'is_verified', 'is_suspended']
+
+
+class AdminUserDetailView(generics.RetrieveUpdateAPIView):
+    serializer_class = AdminUserSerializer
+    permission_classes = [IsStoreAdmin]
+    queryset = User.objects.all()
+
+    def perform_update(self, serializer):
+        is_self = serializer.instance == self.request.user
+        role = serializer.validated_data.get('role', serializer.instance.role)
+        suspended = serializer.validated_data.get('is_suspended', serializer.instance.is_suspended)
+        if is_self and (role != User.Role.ADMIN or suspended):
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'error': 'You cannot remove your own admin access or suspend yourself.'})
+        serializer.save()

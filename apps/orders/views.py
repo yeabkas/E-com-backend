@@ -1,18 +1,26 @@
+import logging
+
 from rest_framework import viewsets, mixins, status, permissions
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated
+from apps.users.permissions import IsStoreAdmin
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.db import transaction
+from django.db.models import Sum, Count, F, DecimalField, ExpressionWrapper
+from django.db.models.functions import TruncDate
+from django.utils import timezone
+from datetime import timedelta
 from decimal import Decimal
-from .models import Order, OrderItem
 from .serializers import OrderSerializer, CheckoutSerializer, ShippingMethodSerializer
-from .models import Order, OrderItem, ShippingMethod
+from .models import Order, OrderItem, OrderStatusHistory, ShippingMethod
 from rest_framework.views import APIView
 from rest_framework.permissions import AllowAny
 from rest_framework.generics import ListAPIView
 from django.db.models import Sum, Count
 from apps.cart.models import Cart
 from apps.catalog.models import Inventory
+
+logger = logging.getLogger(__name__)
 
 class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
     """
@@ -23,7 +31,7 @@ class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
 
     def get_queryset(self):
         # Users can only see their own orders
-        return Order.objects.filter(user=self.request.user).prefetch_related('items')
+        return Order.objects.filter(user=self.request.user).prefetch_related('items', 'status_history')
 
     @action(detail=False, methods=['POST'])
     def checkout(self, request):
@@ -40,6 +48,11 @@ class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
         shipping_method = None
         if method_id:
             shipping_method = ShippingMethod.objects.filter(id=method_id, is_active=True).first()
+            if shipping_method is None:
+                return Response(
+                    {"error": "The selected shipping method is not available."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if shipping_method is None:
             shipping_method = ShippingMethod.objects.filter(is_active=True).order_by('price').first()
         user = request.user
@@ -63,6 +76,7 @@ class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
                     user=user,
                     status=Order.OrderStatus.PENDING,
                 )
+                OrderStatusHistory.objects.create(order=order, status=Order.OrderStatus.PENDING)
                 order.populate_shipping_snapshot(shipping_address)
 
                 subtotal = Decimal('0.00')
@@ -110,15 +124,18 @@ class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
                         item.item_total for item in cart_items
                         if cart.coupon.applies_to(item.inventory.product)
                     )
-                    ok, _msg = cart.coupon.is_valid_for(scoped_subtotal, user=user)
-                    if ok and scoped_subtotal > 0:
-                        discount = cart.coupon.discount_for(scoped_subtotal)
-                        if cart.coupon.type == cart.coupon.Type.FREE_SHIPPING:
-                            order.shipping_amount = Decimal('0.00')
-                        order.coupon_code = cart.coupon.code
-                        order.discount_amount = discount
-                        from apps.promotions.models import CouponUsage
-                        CouponUsage.objects.create(coupon=cart.coupon, user=user, order=order)
+                    ok, coupon_error = cart.coupon.is_valid_for(scoped_subtotal, user=user)
+                    if not ok:
+                        raise ValueError(coupon_error)
+                    if scoped_subtotal <= 0:
+                        raise ValueError("This coupon doesn't apply to any items in your cart.")
+                    discount = cart.coupon.discount_for(scoped_subtotal)
+                    if cart.coupon.type == cart.coupon.Type.FREE_SHIPPING:
+                        order.shipping_amount = Decimal('0.00')
+                    order.coupon_code = cart.coupon.code
+                    order.discount_amount = discount
+                    from apps.promotions.models import CouponUsage
+                    CouponUsage.objects.create(coupon=cart.coupon, user=user, order=order)
 
                 order.total_amount = subtotal - discount + order.shipping_amount + order.tax_amount
                 order.save()
@@ -130,15 +147,16 @@ class OrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.Ge
 
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
+        except Exception:
+            logger.exception('Checkout failed for user %s', user.id)
             return Response({"error": "An unexpected error occurred during checkout."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AdminOrderViewSet(viewsets.ReadOnlyModelViewSet):
     """PI Admin order management for support and fulfillment."""
     serializer_class = OrderSerializer
-    permission_classes = [IsAdminUser]
-    queryset = Order.objects.all()
+    permission_classes = [IsStoreAdmin]
+    queryset = Order.objects.prefetch_related('items', 'status_history')
     filterset_fields = ['status']
     ordering_fields = ['created_at']
     ordering = ['-created_at']
@@ -150,7 +168,10 @@ class AdminOrderViewSet(viewsets.ReadOnlyModelViewSet):
         if not new_status:
             return Response({"error": "status is required"}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            order.transition_to(new_status)
+            with transaction.atomic():
+                locked = Order.objects.select_for_update().get(id=order.id)
+                locked.transition_to(new_status)
+                order = locked
         except ValueError as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         try:
@@ -173,7 +194,7 @@ class ShippingMethodListView(ListAPIView):
 
 class AdminShippingMethodViewSet(viewsets.ModelViewSet):
     serializer_class = ShippingMethodSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsStoreAdmin]
     queryset = ShippingMethod.objects.all()
 
 
@@ -183,11 +204,26 @@ class SellerSalesListView(APIView):
     def get(self, request):
         user = request.user
         from apps.catalog.models import Product
-        if getattr(user, 'role', None) == 'SELLER':
+        role = getattr(user, 'role', None)
+        if role == 'SELLER':
             product_ids = Product.objects.filter(seller=user).values_list('id', flat=True)
-        else:
+        elif role == 'ADMIN' or getattr(user, 'is_staff', False):
             product_ids = Product.objects.all().values_list('id', flat=True)
-        items = OrderItem.objects.filter(product_id__in=product_ids).select_related('order').order_by('-order__created_at')
+        else:
+            return Response(
+                {'error': 'Seller or Admin access required.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        items = OrderItem.objects.filter(
+            product_id__in=product_ids,
+            order__status__in=[
+                Order.OrderStatus.PAID,
+                Order.OrderStatus.PROCESSING,
+                Order.OrderStatus.SHIPPED,
+                Order.OrderStatus.DELIVERED,
+                Order.OrderStatus.COMPLETED,
+            ],
+        ).select_related('order').order_by('-order__created_at')
         payload = []
         for it in items:
             payload.append({
@@ -214,29 +250,79 @@ class AdminMetricsView(APIView):
         from apps.catalog.models import Product
         from apps.catalog.serializers import ProductListSerializer
 
+        paid_statuses = [
+            Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
+            Order.OrderStatus.SHIPPED, Order.OrderStatus.DELIVERED, Order.OrderStatus.COMPLETED,
+        ]
+        start_date = (timezone.now() - timedelta(days=29)).date()
+
+        def empty_series():
+            return {
+                (start_date + timedelta(days=offset)).isoformat(): 0.0
+                for offset in range(30)
+            }
+
         if getattr(user, 'role', None) == 'SELLER':
             product_ids = Product.objects.filter(seller=user).values_list('id', flat=True)
             seller_items = OrderItem.objects.filter(
                 product_id__in=product_ids,
-                order__status__in=[
-                    Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
-                    Order.OrderStatus.SHIPPED, Order.OrderStatus.DELIVERED, Order.OrderStatus.COMPLETED
-                ]
+                order__status__in=paid_statuses,
             )
-            revenue_total = seller_items.aggregate(total=Sum('total_price'))['total'] or 0
-            order_count = Order.objects.filter(items__product_id__in=product_ids).distinct().count()
+            line_revenue = ExpressionWrapper(
+                F('quantity') * F('unit_price'),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            )
+            revenue_total = seller_items.aggregate(total=Sum(line_revenue))['total'] or 0
+            series = empty_series()
+            rows = (
+                seller_items.filter(order__created_at__date__gte=start_date)
+                .annotate(day=TruncDate('order__created_at'))
+                .values('day')
+                .annotate(revenue=Sum(line_revenue))
+                .order_by('day')
+            )
+            for row in rows:
+                if row['day']:
+                    series[row['day'].isoformat()] = float(row['revenue'] or 0)
+
+            status_rows = (
+                seller_items.values('order__status')
+                .annotate(count=Count('order_id', distinct=True))
+                .order_by('order__status')
+            )
+            seller_funnel = [
+                {'status': row['order__status'], 'count': row['count']}
+                for row in status_rows
+            ]
+            orders_by_status = {
+                entry['status']: entry['count'] for entry in seller_funnel
+            }
+
             top = Product.objects.filter(seller=user).order_by('-sales_count')[:10]
             return Response({
                 'revenue': revenue_total,
-                'orders_by_status': {'COMPLETED': order_count},
-                'funnel': [{'status': 'COMPLETED', 'count': order_count}],
+                'orders_by_status': orders_by_status,
+                'funnel': seller_funnel,
                 'top_products': ProductListSerializer(top, many=True, context={'request': request}).data,
+                'revenue_by_day': [
+                    {'date': day, 'revenue': value} for day, value in series.items()
+                ],
             })
 
-        revenue_total = Order.objects.filter(
-            status__in=[Order.OrderStatus.PAID, Order.OrderStatus.PROCESSING,
-                        Order.OrderStatus.SHIPPED, Order.OrderStatus.DELIVERED, Order.OrderStatus.COMPLETED]
-        ).aggregate(total=Sum('total_amount'))['total'] or 0
+        paid_orders = Order.objects.filter(status__in=paid_statuses)
+        revenue_total = paid_orders.aggregate(total=Sum('total_amount'))['total'] or 0
+        series = empty_series()
+        rows = (
+            paid_orders.filter(created_at__date__gte=start_date)
+            .annotate(day=TruncDate('created_at'))
+            .values('day')
+            .annotate(revenue=Sum('total_amount'))
+            .order_by('day')
+        )
+        for row in rows:
+            if row['day']:
+                series[row['day'].isoformat()] = float(row['revenue'] or 0)
+
         funnel = list(Order.objects.values('status').annotate(count=Count('id')))
         orders_by_status = {f['status']: f['count'] for f in funnel}
         top = Product.objects.order_by('-sales_count')[:10]
@@ -245,4 +331,7 @@ class AdminMetricsView(APIView):
             'funnel': funnel,
             'orders_by_status': orders_by_status,
             'top_products': ProductListSerializer(top, many=True, context={'request': request}).data,
+            'revenue_by_day': [
+                {'date': day, 'revenue': value} for day, value in series.items()
+            ],
         })

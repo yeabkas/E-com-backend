@@ -8,7 +8,7 @@ from django.conf import settings
 
 class PaymentProvider(ABC):
     @abstractmethod
-    def initialize(self, order, callback_url: str, **kwargs) -> dict: ...
+    def initialize(self, order, callback_url: str, return_url: str | None = None, **kwargs) -> dict: ...
 
     @abstractmethod
     def verify(self, tx_ref: str) -> dict: ...
@@ -17,12 +17,12 @@ class PaymentProvider(ABC):
 class ChapaProvider(PaymentProvider):
     BASE = 'https://api.chapa.co/v1'
 
-    def initialize(self, order, callback_url: str, **kwargs) -> dict:
+    def initialize(self, order, callback_url: str, return_url: str | None = None, **kwargs) -> dict:
         secret = os.environ.get('CHAPA_SECRET_KEY') or getattr(settings, 'CHAPA_SECRET_KEY', '')
         if not secret:
             raise RuntimeError('CHAPA_SECRET_KEY is not configured')
 
-        tx_ref = f"gash_{order.id.hex[:12]}"
+        tx_ref = kwargs.get('tx_ref') or f"gash_{order.id.hex[:12]}"
         payload = {
             'amount': str(order.total_amount),
             'currency': 'ETB',
@@ -31,7 +31,7 @@ class ChapaProvider(PaymentProvider):
             'last_name': order.user.last_name,
             'tx_ref': tx_ref,
             'callback_url': callback_url,
-            'return_url': callback_url,
+            'return_url': return_url or callback_url,
             'customization': {'title': 'GASH E-COM Order', 'description': f'Order {order.id}'},
         }
         r = requests.post(
@@ -53,7 +53,13 @@ class ChapaProvider(PaymentProvider):
             timeout=20,
         )
         data = r.json()
-        return {'ok': r.status_code == 200 and data.get('status') == 'success' and data.get('data', {}).get('status') == 'success', 'raw': data}
+        payload = data.get('data') or {}
+        return {
+            'ok': r.status_code == 200 and data.get('status') == 'success' and payload.get('status') == 'success',
+            'amount': payload.get('amount'),
+            'currency': payload.get('currency'),
+            'raw': data,
+        }
 
 
 _default_provider: PaymentProvider | None = None

@@ -14,4 +14,6 @@ urlpatterns = [
     path('password-reset-confirm/', views.PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     path('verify-email/', views.VerifyEmailView.as_view(), name='verify-email'),
     path('resend-verification/', views.ResendVerificationView.as_view(), name='resend-verification'),
+    path('admin/users/', views.AdminUserListView.as_view(), name='admin-user-list'),
+    path('admin/users/<uuid:pk>/', views.AdminUserDetailView.as_view(), name='admin-user-detail'),
 ]

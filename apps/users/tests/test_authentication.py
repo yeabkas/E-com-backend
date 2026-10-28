@@ -42,7 +42,8 @@ class TestLogin:
         self.user.save()
         data = {"email": "test@example.com", "password": "StrongPass123!"}
         response = self.client.post(self.url, data, format='json')
-        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert 'suspended' in response.data['error']
 
 
 @pytest.mark.django_db
@@ -50,7 +51,7 @@ class TestProtectedEndpoints:
 
     def setup_method(self):
         self.client = APIClient()
-        self.user = UserFactory()
+        self.user = UserFactory(password="StrongPass123!")
 
     def test_access_profile_without_token(self):
         url = reverse('auth-me')
@@ -72,6 +73,35 @@ class TestProtectedEndpoints:
         assert response.status_code == status.HTTP_200_OK
         assert response.data['first_name'] == "Updated"
         assert response.data['last_name'] == "Name"
+
+    def test_suspended_user_token_is_rejected(self):
+        login = self.client.post(
+            reverse('auth-login'),
+            {"email": self.user.email, "password": "StrongPass123!"},
+            format='json',
+        )
+        assert login.status_code == status.HTTP_200_OK
+        access = login.data['access']
+        self.user.is_suspended = True
+        self.user.save(update_fields=['is_suspended'])
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        response = self.client.get(reverse('auth-me'))
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert 'suspended' in str(response.data).lower()
+
+    def test_suspended_user_cannot_refresh_tokens(self):
+        login = self.client.post(
+            reverse('auth-login'),
+            {"email": self.user.email, "password": "StrongPass123!"},
+            format='json',
+        )
+        refresh = login.data['refresh']
+        self.user.is_suspended = True
+        self.user.save(update_fields=['is_suspended'])
+        response = self.client.post(
+            reverse('auth-token-refresh'), {'refresh': refresh}, format='json'
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
 
 
 @pytest.mark.django_db

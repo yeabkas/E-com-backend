@@ -122,6 +122,9 @@ class Inventory(models.Model):
     def save(self, *args, **kwargs):
         if self.quantity_available > self.low_stock_threshold and self.low_stock_alerted:
             self.low_stock_alerted = False
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'low_stock_alerted'}
 
         previous = self._previous_available
         super().save(*args, **kwargs)
@@ -129,7 +132,11 @@ class Inventory(models.Model):
 
         if previous is not None and previous == 0 and self.quantity_available > 0:
             from apps.orders.tasks import send_restock_notifications
-            send_restock_notifications.delay(str(getattr(self, 'product_id', self.product.id)))
+            try:
+                send_restock_notifications.delay(str(self.product_id))
+            except Exception:
+                # Email dispatch must never break inventory updates.
+                pass
 
     def __str__(self):
         return f"{self.product.name} - {self.sku} ({self.variant_label})"

@@ -8,11 +8,37 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.core.cache import cache
+from django.db import connection
 from django.http import JsonResponse
+
+
+def health_check(request):
+    checks = {'database': False, 'cache': False}
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT 1')
+            cursor.fetchone()
+        checks['database'] = True
+    except Exception:
+        pass
+    try:
+        cache.set('healthcheck', 'ok', timeout=10)
+        checks['cache'] = cache.get('healthcheck') == 'ok'
+    except Exception:
+        pass
+    healthy = all(checks.values())
+    return JsonResponse(
+        {'status': 'ok' if healthy else 'degraded', 'checks': checks},
+        status=200 if healthy else 503,
+    )
+
 
 
 def debug_info(request):
     """Diagnostic endpoint to troubleshoot deployment and persistence issues."""
+    if not settings.DEBUG or not getattr(request.user, 'is_staff', False):
+        return JsonResponse({'error': 'Not found'}, status=404)
     from apps.users.models import User
     from apps.catalog.models import Product
     from apps.wishlist.models import WishlistItem
@@ -78,6 +104,7 @@ def debug_info(request):
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/v1/health/', health_check, name='health-check'),
     path('api/v1/debug/', debug_info),
     path('api/v1/auth/', include('apps.users.urls')),
     path('api/v1/catalog/', include('apps.catalog.urls')),

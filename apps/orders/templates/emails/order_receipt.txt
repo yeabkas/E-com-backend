@@ -1,0 +1,28 @@
+Order {{ order_number }} confirmed
+
+Hi {{ order.shipping_name|default:order.user.first_name|default:"there" }},
+
+Thanks for shopping with GASH E-COM. We have received your payment and your order is confirmed.
+
+Order number: {{ order_number }}
+Status: {{ order.status }}
+
+Items
+{% for item in items %}- {{ item.quantity }} x {{ item.product_name }}{% if item.variant_label %} ({{ item.variant_label }}){% endif %} — ETB {{ item.total_price }}
+{% endfor %}
+Subtotal: ETB {{ order.subtotal }}
+Discount: -ETB {{ order.discount_amount }}
+Shipping: {% if order.shipping_amount %}ETB {{ order.shipping_amount }}{% else %}Free{% endif %}
+Total: ETB {{ order.total_amount }}
+
+Shipping to:
+{{ order.shipping_name }}
+{{ order.shipping_street_line_1 }}{% if order.shipping_street_line_2 %}
+{{ order.shipping_street_line_2 }}{% endif %}
+{{ order.shipping_city }}{% if order.shipping_state_province %}, {{ order.shipping_state_province }}{% endif %} {{ order.shipping_postal_code }}
+{{ order.shipping_country_code }}
+
+Track your order: {{ frontend_url }}/orders/{{ order.id }}
+
+Thank you,
+GASH E-COM

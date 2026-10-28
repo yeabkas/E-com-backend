@@ -33,7 +33,19 @@ class TestCouponFlow:
         assert resp.status_code == 201, resp.data
         assert resp.data['coupon_code'] == 'SAVE10'
         assert Decimal(str(resp.data['discount_amount'])) == Decimal('20.00')
-        assert Decimal(str(resp.data['total_amount'])) == Decimal('180.00')
+        assert Decimal(str(resp.data['shipping_amount'])) == Decimal('50.00')
+        assert Decimal(str(resp.data['total_amount'])) == Decimal('230.00')
+
+    def test_free_shipping_coupon_waives_shipping(self):
+        Coupon.objects.create(code='FREESHIP', type='FREE_SHIPPING', value=Decimal('0'))
+        self.client.force_authenticate(self.user)
+        self.client.post('/api/v1/cart/add_item/', {'inventory': str(self.inv.id), 'quantity': 1}, format='json')
+        resp = self.client.post('/api/v1/cart/apply_coupon/', {'code': 'FREESHIP'}, format='json')
+        assert resp.status_code == 200, resp.data
+        resp = self.client.post('/api/v1/orders/checkout/', {'shipping_address_id': str(self.addr.id)}, format='json')
+        assert resp.status_code == 201, resp.data
+        assert Decimal(str(resp.data['shipping_amount'])) == Decimal('0.00')
+        assert Decimal(str(resp.data['total_amount'])) == Decimal('100.00')
 
     def test_invalid_coupon_rejected(self):
         self.client.force_authenticate(self.user)

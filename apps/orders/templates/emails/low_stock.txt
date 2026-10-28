@@ -1,0 +1,9 @@
+Low stock alert
+
+The following inventory items are at or below their low-stock threshold:
+
+{% for item in items %}- {{ item.name }} (SKU {{ item.sku }}): {{ item.quantity }} available, threshold {{ item.threshold }}
+{% endfor %}
+Review inventory: {{ frontend_url }}/admin
+
+GASH E-COM

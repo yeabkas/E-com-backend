@@ -1,0 +1,13 @@
+Your order {{ order_number }} has shipped
+
+Hi {{ order.shipping_name|default:order.user.first_name|default:"there" }},
+
+Good news — your order is on its way.
+
+Order number: {{ order_number }}
+Shipping method: {{ order.shipping_method_name|default:"Standard shipping" }}
+
+Track your order: {{ frontend_url }}/orders/{{ order.id }}
+
+Thank you,
+GASH E-COM

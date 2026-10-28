@@ -1,14 +1,44 @@
+import logging
 from datetime import timedelta
 
 from celery import shared_task
 from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
+from django.db.models import F
+from django.template.loader import render_to_string
 from django.utils import timezone
 
 from apps.catalog.models import Inventory, RestockSubscription, Product
 from apps.orders.models import Order
 
 UNPAID_ORDER_TTL = timedelta(hours=1)
+logger = logging.getLogger(__name__)
+
+
+def _send_templated_email(subject, text_template, html_template, context, recipients):
+    """Send one multipart email. Returns True when the backend accepted it."""
+    text_body = render_to_string(text_template, context)
+    html_body = render_to_string(html_template, context)
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=None,
+        to=list(dict.fromkeys(recipients)),
+    )
+    message.attach_alternative(html_body, 'text/html')
+    message.send()
+    return True
+
+
+def _order_email_context(order):
+    return {
+        'order': order,
+        'order_number': order.order_number,
+        'items': list(order.items.all()),
+        'frontend_url': settings.FRONTEND_URL.rstrip('/'),
+    }
+
 
 
 @shared_task
@@ -18,15 +48,15 @@ def expire_unpaid_orders():
     stale = Order.objects.filter(status=Order.OrderStatus.PENDING, created_at__lt=cutoff)
     cancelled = 0
     for order in stale:
-        with transaction.atomic():
-            for item in order.items.all():  # type: ignore[attr-defined]
-                inv = Inventory.objects.filter(sku=item.sku).first()
-                if inv is not None:
-                    inv.quantity_available += item.quantity
-                    inv.quantity_reserved = max(inv.quantity_reserved - item.quantity, 0)
-                    inv.save(update_fields=['quantity_available', 'quantity_reserved'])
-            order.transition_to(Order.OrderStatus.CANCELLED)
-            cancelled += 1
+        try:
+            with transaction.atomic():
+                locked = Order.objects.select_for_update().get(id=order.id)
+                if locked.status != Order.OrderStatus.PENDING:
+                    continue
+                locked.transition_to(Order.OrderStatus.CANCELLED)
+                cancelled += 1
+        except Exception:
+            logger.exception('Failed to cancel expired order %s', order.id)
 
     # Expire abandoned anonymous carts (no user) older than 7 days
     from apps.cart.models import Cart
@@ -38,20 +68,22 @@ def expire_unpaid_orders():
 
 @shared_task
 def send_order_receipt_email(order_id: str) -> bool:
-    """Send an order receipt email via the configured email backend."""
-    from django.core.mail import send_mail
-    from apps.orders.models import Order
+    """Send a multipart order receipt email via the configured backend."""
     try:
-        order = Order.objects.select_related('user').get(id=order_id)
+        order = Order.objects.select_related('user').prefetch_related('items').get(id=order_id)
     except Order.DoesNotExist:
         return False
-    lines = [f"Order {order.id} confirmed. Total: ETB {order.total_amount}"]
-    send_mail(
-        subject=f'GASH E-COM: Order {str(order.id)[:8]} receipt',
-        message='\n'.join(lines),
-        from_email=None,
-        recipient_list=[order.user.email],
-    )
+    context = _order_email_context(order)
+    try:
+        _send_templated_email(
+            subject=f'GASH E-COM: Order {order.order_number} receipt',
+            text_template='emails/order_receipt.txt',
+            html_template='emails/order_receipt.html',
+            context=context,
+            recipients=[order.user.email],
+        )
+    except Exception:
+        return False
     return True
 
 
@@ -83,51 +115,76 @@ def send_restock_notifications(product_id: str) -> int:
 
 @shared_task
 def send_low_stock_alerts() -> int:
-    from django.core.mail import send_mail
-    from apps.catalog.models import Inventory
-    # Group low-stock items by product owner to send at most one email per owner group? Send list
-    alerted = 0
-    recipients_by_owner: dict = {}
-    # Simplify: filter threshold individually
-    low_items = [i for i in Inventory.objects.select_related('product','product__seller').all() if i.quantity_available <= i.low_stock_threshold]
+    from apps.users.models import User
+
+    low_items = list(
+        Inventory.objects.select_related('product', 'product__seller')
+        .filter(quantity_available__lte=F('low_stock_threshold'), low_stock_alerted=False)
+    )
+    if not low_items:
+        return 0
+
+    admin_emails = list(
+        User.objects.filter(role=User.Role.ADMIN, is_active=True, is_suspended=False)
+        .exclude(email='')
+        .values_list('email', flat=True)
+    )
+    recipients_by_email: dict[str, list] = {}
     for inv in low_items:
-        if inv.low_stock_alerted:
-            continue
+        recipients = set(admin_emails)
         seller = getattr(inv.product, 'seller', None)
-        owner_email = seller.email if seller is not None else getattr(settings, 'DEFAULT_FROM_EMAIL', 'admin@example.com')
-        recipients_by_owner.setdefault(owner_email, []).append((inv, seller))
-    for owner_email, items in recipients_by_owner.items():
-        lines = ['Low stock items:']
-        for inv, seller in items:
-            lines.append(f"- {inv.product.name} SKU {inv.sku}: {inv.quantity_available} left")
+        if seller is not None and seller.email:
+            recipients.add(seller.email)
+        if not recipients:
+            recipients.add(settings.DEFAULT_FROM_EMAIL)
+        for email in recipients:
+            recipients_by_email.setdefault(email, []).append(inv)
+
+    notified_ids = set()
+    for email, items in recipients_by_email.items():
+        context = {
+            'items': [
+                {
+                    'name': inv.product.name,
+                    'sku': inv.sku,
+                    'quantity': inv.quantity_available,
+                    'threshold': inv.low_stock_threshold,
+                }
+                for inv in items
+            ],
+            'frontend_url': settings.FRONTEND_URL.rstrip('/'),
+        }
         try:
-            send_mail(
+            _send_templated_email(
                 subject='GASH E-COM low-stock alert',
-                message='\n'.join(lines),
-                from_email=None,
-                recipient_list=[owner_email],
+                text_template='emails/low_stock.txt',
+                html_template='emails/low_stock.html',
+                context=context,
+                recipients=[email],
             )
-            for inv, _ in items:
-                inv.low_stock_alerted = True
-                inv.save(update_fields=['low_stock_alerted'])
-            alerted += len(items)
+            notified_ids.update(inv.id for inv in items)
         except Exception:
             pass
-    return alerted
+
+    if notified_ids:
+        Inventory.objects.filter(id__in=notified_ids).update(low_stock_alerted=True)
+    return len(notified_ids)
 
 
 @shared_task
 def send_order_shipping_email(order_id: str) -> bool:
-    from django.core.mail import send_mail
-    from apps.orders.models import Order
     try:
-        order = Order.objects.select_related('user').get(id=order_id)
+        order = Order.objects.select_related('user').prefetch_related('items').get(id=order_id)
     except Order.DoesNotExist:
         return False
-    send_mail(
-        subject=f'GASH E-COM: Your order {str(order.id)[:8]} has shipped',
-        message=f'Your order {order.id} is on its way.',
-        from_email=None,
-        recipient_list=[order.user.email],
-    )
+    try:
+        _send_templated_email(
+            subject=f'GASH E-COM: Your order {order.order_number} has shipped',
+            text_template='emails/order_shipped.txt',
+            html_template='emails/order_shipped.html',
+            context=_order_email_context(order),
+            recipients=[order.user.email],
+        )
+    except Exception:
+        return False
     return True

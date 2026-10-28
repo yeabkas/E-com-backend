@@ -24,10 +24,11 @@ class CartSerializer(serializers.ModelSerializer):
     discount_amount = serializers.SerializerMethodField()
     total_after_discount = serializers.SerializerMethodField()
     coupon_code = serializers.SerializerMethodField()
+    coupon_type = serializers.SerializerMethodField()
 
     class Meta:
         model = Cart
-        fields = ['id', 'user', 'items', 'cart_total', 'discount_amount', 'total_after_discount', 'coupon_code', 'updated_at']
+        fields = ['id', 'user', 'items', 'cart_total', 'discount_amount', 'total_after_discount', 'coupon_code', 'coupon_type', 'updated_at']
         read_only_fields = ['id', 'user', 'updated_at']
 
     def get_cart_total(self, obj):
@@ -49,6 +50,9 @@ class CartSerializer(serializers.ModelSerializer):
 
     def get_coupon_code(self, obj):
         return obj.coupon.code if obj.coupon else None
+
+    def get_coupon_type(self, obj):
+        return obj.coupon.type if obj.coupon else None
 
 class CartMergeSerializer(serializers.Serializer):
     session_cart_id = serializers.UUIDField(required=True)

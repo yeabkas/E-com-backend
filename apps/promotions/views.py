@@ -1,6 +1,8 @@
 from rest_framework import viewsets, permissions, serializers
 from rest_framework.viewsets import ModelViewSet
 
+from apps.users.permissions import IsStoreAdmin
+
 from .models import Coupon, CouponUsage
 from .serializers import CouponSerializer
 
@@ -25,5 +27,5 @@ class SellerCouponViewSet(ModelViewSet):
 class AdminCouponViewSet(ModelViewSet):
     """CRUD for coupons — store admins only."""
     serializer_class = CouponSerializer
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [IsStoreAdmin]
     queryset = Coupon.objects.all()

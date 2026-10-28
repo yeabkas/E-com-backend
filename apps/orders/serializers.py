@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Order, OrderItem, ShippingMethod
+from .models import Order, OrderItem, OrderStatusHistory, ShippingMethod
 from apps.users.models import Address
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -10,13 +10,21 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'product_id', 'product_name', 'sku', 'variant_label', 'quantity', 'unit_price', 'total_price']
         read_only_fields = fields
 
+class OrderStatusHistorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderStatusHistory
+        fields = ['status', 'created_at']
+
+
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
+    status_history = OrderStatusHistorySerializer(many=True, read_only=True)
+    order_number = serializers.CharField(read_only=True)
 
     class Meta:
         model = Order
         fields = [
-            'id', 'user', 'status', 'items', 
+            'id', 'order_number', 'user', 'status', 'items', 'status_history', 
             'shipping_name', 'shipping_street_line_1', 'shipping_street_line_2',
             'shipping_city', 'shipping_state_province', 'shipping_postal_code', 'shipping_country_code',
             'subtotal', 'tax_amount', 'shipping_amount', 'total_amount', 'shipping_method_name',

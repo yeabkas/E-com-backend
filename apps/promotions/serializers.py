@@ -9,6 +9,7 @@ class CouponSerializer(serializers.ModelSerializer):
     class Meta:
         model = Coupon
         fields = '__all__'
+        read_only_fields = ['seller', 'created_by']
 
     def validate(self, attrs):
         request = self.context.get('request')

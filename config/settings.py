@@ -101,6 +101,8 @@ database_url = os.environ.get('DATABASE_URL')
 
 # In test mode or when USE_SQLITE is explicitly requested, use SQLite
 is_test_runner = 'pytest' in sys.modules or 'test' in sys.argv or bool(os.environ.get('USE_SQLITE'))
+if is_test_runner:
+    EMAIL_BACKEND = 'django.core.mail.backends.locmem.EmailBackend'
 
 if not is_test_runner and not database_url:
     database_url = NEON_DATABASE_URL
@@ -194,7 +196,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'apps.users.authentication.SuspensionAwareJWTAuthentication',
     ),
     'DEFAULT_FILTER_BACKENDS': (
         'django_filters.rest_framework.DjangoFilterBackend',
@@ -214,6 +216,44 @@ REST_FRAMEWORK = {
 }
 
 FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+BACKEND_URL = os.environ.get('BACKEND_URL', 'http://localhost:8000')
+FRONTEND_REVALIDATE_URL = os.environ.get(
+    'FRONTEND_REVALIDATE_URL', f"{FRONTEND_URL.rstrip('/')}/api/revalidate"
+)
+FRONTEND_REVALIDATE_SECRET = os.environ.get('FRONTEND_REVALIDATE_SECRET', '')
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{asctime} {levelname} {name} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': os.environ.get('DJANGO_LOG_LEVEL', 'INFO'),
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'apps': {
+            'handlers': ['console'],
+            'level': os.environ.get('APP_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}
 
 # Simple JWT
 SIMPLE_JWT = {
@@ -271,10 +311,16 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', 'redis://localhost:6379/0')
 CHAPA_SECRET_KEY = os.environ.get('CHAPA_SECRET_KEY', '')
+CHAPA_WEBHOOK_SECRET = os.environ.get('CHAPA_WEBHOOK_SECRET', '')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
+CELERY_TASK_PUBLISH_RETRY = False
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+if is_test_runner:
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
 
 # Cache: Redis if configured, otherwise in-memory LocMemCache (for serverless/local dev)
 REDIS_URL = os.environ.get('REDIS_URL')
@@ -299,7 +345,7 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.orders.tasks.expire_unpaid_orders',
         'schedule': 3600.0,
     },
-  'low-stock-alerts': {
+    'low-stock-alerts': {
         'task': 'apps.orders.tasks.send_low_stock_alerts',
         'schedule': 14400.0,
     },
