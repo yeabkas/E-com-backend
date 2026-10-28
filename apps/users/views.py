@@ -240,6 +240,53 @@ class MeView(generics.RetrieveUpdateAPIView):
         return Response(UserSerializer(self.get_object(), context={'request': request}).data)
 
 
+def process_avatar_to_data_uri(file_or_data, max_dim=400, quality=85):
+    """
+    Process an uploaded file or base64 data URI, auto-rotate, thumbnail to max_dim x max_dim,
+    and return an optimized base64 data URI for reliable database persistence.
+    """
+    from PIL import Image, ImageOps
+    import io
+    import base64
+
+    if isinstance(file_or_data, str):
+        if file_or_data.startswith('data:image'):
+            header, imgstr = file_or_data.split(';base64,')
+            raw = base64.b64decode(imgstr)
+        else:
+            raw = base64.b64decode(file_or_data)
+        stream = io.BytesIO(raw)
+    elif hasattr(file_or_data, 'read'):
+        file_or_data.seek(0)
+        stream = io.BytesIO(file_or_data.read())
+    elif isinstance(file_or_data, (bytes, bytearray)):
+        stream = io.BytesIO(file_or_data)
+    else:
+        raise ValueError("Unsupported image source")
+
+    img = Image.open(stream)
+    img = ImageOps.exif_transpose(img)
+
+    has_alpha = False
+    if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+        has_alpha = True
+
+    img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+
+    out_stream = io.BytesIO()
+    if has_alpha:
+        img.save(out_stream, format='PNG', optimize=True)
+        mime = 'image/png'
+    else:
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img.save(out_stream, format='JPEG', quality=quality, optimize=True)
+        mime = 'image/jpeg'
+
+    b64_str = base64.b64encode(out_stream.getvalue()).decode('utf-8')
+    return f"data:{mime};base64,{b64_str}"
+
+
 class ProfilePictureView(APIView):
     """
     POST /api/v1/auth/me/profile-picture/ — Upload a profile picture (multipart file or base64)
@@ -250,40 +297,40 @@ class ProfilePictureView(APIView):
     def post(self, request):
         user = request.user
         file = request.FILES.get('profile_picture') or request.FILES.get('image') or request.FILES.get('avatar')
-        
-        if file:
-            if user.profile_picture:
+        b64_data = request.data.get('profile_picture') or request.data.get('image') or request.data.get('avatar')
+
+        source = file or b64_data
+        if not source:
+            return Response({'error': 'No image file or valid image data provided.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            data_uri = process_avatar_to_data_uri(source)
+            user.profile_picture_data = data_uri
+
+            if file:
                 try:
-                    user.profile_picture.delete(save=False)
+                    file.seek(0)
+                    user.profile_picture = file
                 except Exception:
                     pass
-            user.profile_picture = file
+            elif isinstance(b64_data, str) and b64_data.startswith('data:image'):
+                import uuid
+                import base64
+                from django.core.files.base import ContentFile
+                try:
+                    format_part, imgstr = b64_data.split(';base64,')
+                    ext = format_part.split('/')[-1]
+                    if ext == 'jpeg':
+                        ext = 'jpg'
+                    content_file = ContentFile(base64.b64decode(imgstr), name=f"avatar_{uuid.uuid4().hex[:8]}.{ext}")
+                    user.profile_picture = content_file
+                except Exception:
+                    pass
+
             user.save()
             return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
-        
-        b64_data = request.data.get('profile_picture')
-        if b64_data and isinstance(b64_data, str) and b64_data.startswith('data:image'):
-            import base64
-            import uuid
-            from django.core.files.base import ContentFile
-            try:
-                format, imgstr = b64_data.split(';base64,')
-                ext = format.split('/')[-1]
-                if ext == 'jpeg':
-                    ext = 'jpg'
-                if user.profile_picture:
-                    try:
-                        user.profile_picture.delete(save=False)
-                    except Exception:
-                        pass
-                data = ContentFile(base64.b64decode(imgstr), name=f"avatar_{uuid.uuid4().hex[:8]}.{ext}")
-                user.profile_picture = data
-                user.save()
-                return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
-            except Exception as e:
-                return Response({'error': f'Failed to process image: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        return Response({'error': 'No image file or valid image data provided.'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': f'Failed to process profile picture: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request):
         user = request.user
@@ -292,8 +339,9 @@ class ProfilePictureView(APIView):
                 user.profile_picture.delete(save=False)
             except Exception:
                 pass
-            user.profile_picture = None
-            user.save()
+        user.profile_picture = None
+        user.profile_picture_data = None
+        user.save()
         return Response(UserSerializer(user, context={'request': request}).data, status=status.HTTP_200_OK)
 
 

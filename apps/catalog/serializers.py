@@ -22,6 +22,8 @@ class SellerInfoSerializer(serializers.ModelSerializer):
         return name if name else obj.email.split('@')[0]
 
     def get_profile_picture(self, obj):
+        if getattr(obj, 'profile_picture_data', None):
+            return obj.profile_picture_data
         if obj.profile_picture:
             try:
                 url = obj.profile_picture.url

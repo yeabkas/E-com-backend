@@ -45,6 +45,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CUSTOMER)
     phone = models.CharField(max_length=20, blank=True)
     profile_picture = models.ImageField(upload_to='profiles/%Y/%m/', null=True, blank=True)
+    profile_picture_data = models.TextField(blank=True, null=True)
     is_verified = models.BooleanField(default=False)
     is_suspended = models.BooleanField(default=False)
     is_staff = models.BooleanField(default=False)

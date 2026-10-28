@@ -72,6 +72,8 @@ class UserSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'email', 'role', 'is_verified', 'created_at']
 
     def get_profile_picture(self, obj):
+        if getattr(obj, 'profile_picture_data', None):
+            return obj.profile_picture_data
         if obj.profile_picture:
             try:
                 url = obj.profile_picture.url
@@ -89,7 +91,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['first_name', 'last_name', 'phone', 'profile_picture']
+        fields = ['first_name', 'last_name', 'phone', 'profile_picture', 'profile_picture_data']
 
 
 class AddressSerializer(serializers.ModelSerializer):
