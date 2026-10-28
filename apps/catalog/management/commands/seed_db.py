@@ -64,6 +64,7 @@ class Command(BaseCommand):
                     is_active=True,
                     is_verified=True,
                 )
+                # pyrefly: ignore [bad-argument-type]
                 demo_user.set_password(u['password'])
                 demo_user.save()
                 self.stdout.write(self.style.SUCCESS(f"Created {u['role']} user: {norm_email}"))

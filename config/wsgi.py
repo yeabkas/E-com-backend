@@ -58,6 +58,7 @@ if os.environ.get('VERCEL'):
         ]
 
         for u in demo_users:
+            # pyrefly: ignore [missing-attribute]
             norm_email = u['email'].strip().lower()
             fixed_id = uuid.uuid5(uuid.NAMESPACE_DNS, norm_email)
             user_obj = User.objects.filter(email__iexact=norm_email).first() or User.objects.filter(id=fixed_id).first()
@@ -75,6 +76,7 @@ if os.environ.get('VERCEL'):
                     is_active=True,
                     is_verified=True,
                 )
+                # pyrefly: ignore [bad-argument-type]
                 user_obj.set_password(u['password'])
                 user_obj.save()
             else:

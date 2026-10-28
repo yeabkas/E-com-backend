@@ -772,11 +772,20 @@ class ChangeRequestApprovalView(APIView):
                     cr.category.parent_id = val
             cr.category.save()
         elif cr.change_type == 'DELETE':
-            if cr.category.products.exists():
-                cr.category.is_active = False
-                cr.category.save()
+            category = cr.category
+            if category.products.exists():
+                category.is_active = False
+                category.save()
+                cr.status = 'APPROVED'
+                cr.reviewed_by = request.user
+                cr.reviewed_at = timezone.now()
+                cr.save()
+                cache.delete('catalog:categories:v1')
+                return Response(CategoryChangeRequestSerializer(cr).data, status=status.HTTP_200_OK)
             else:
-                cr.category.delete()
+                category.delete()
+                cache.delete('catalog:categories:v1')
+                return Response({'status': 'approved', 'detail': 'Category deleted successfully.'}, status=status.HTTP_200_OK)
 
         cr.status = 'APPROVED'
         cr.reviewed_by = request.user

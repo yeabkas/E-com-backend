@@ -159,9 +159,13 @@ class TestCatalogAdminPermissions:
             {'name': 'Hijacked Taxonomy'},
             format='json',
         )
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_202_ACCEPTED
         self.category.refresh_from_db()
         assert self.category.name == 'Security'
+        from apps.catalog.models import CategoryChangeRequest
+        assert CategoryChangeRequest.objects.filter(
+            category=self.category, requested_by=self.seller, change_type='EDIT'
+        ).exists()
 
     def test_seller_cannot_update_another_sellers_product(self):
         self.client.force_authenticate(user=self.seller)
