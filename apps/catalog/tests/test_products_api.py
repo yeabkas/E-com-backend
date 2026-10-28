@@ -31,6 +31,35 @@ class TestProductListAPI:
         response = self.client.get(self.url, {'category': 'electronics'})
         assert response.data['count'] == 2
 
+    def test_filter_by_parent_category_includes_subcategories(self):
+        apparel = CategoryFactory(name="Apparel", slug="apparel")
+        mens = CategoryFactory(name="Mens", slug="mens", parent=apparel)
+        tshirts = CategoryFactory(name="T-Shirts", slug="t-shirts", parent=mens)
+        books = CategoryFactory(name="Books", slug="books")
+
+        ProductFactory(name="Generic Apparel", category=apparel, is_active=True)
+        ProductFactory(name="Men Jacket", category=mens, is_active=True)
+        ProductFactory(name="Graphic Tee", category=tshirts, is_active=True)
+        ProductFactory(name="Novel", category=books, is_active=True)
+
+        # Filtering by top-level "apparel" should return products in apparel, mens, and tshirts
+        response = self.client.get(self.url, {'category': 'apparel'})
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['count'] == 3
+        returned_names = [p['name'] for p in response.data['results']]
+        assert "Generic Apparel" in returned_names
+        assert "Men Jacket" in returned_names
+        assert "Graphic Tee" in returned_names
+        assert "Novel" not in returned_names
+
+        # Filtering by mid-level "mens" should return products in mens and tshirts
+        sub_resp = self.client.get(self.url, {'category': 'mens'})
+        assert sub_resp.status_code == status.HTTP_200_OK
+        assert sub_resp.data['count'] == 2
+        sub_names = [p['name'] for p in sub_resp.data['results']]
+        assert "Men Jacket" in sub_names
+        assert "Graphic Tee" in sub_names
+
     def test_filter_by_price_range(self):
         ProductFactory(base_price=25.00, is_active=True)
         ProductFactory(base_price=75.00, is_active=True)

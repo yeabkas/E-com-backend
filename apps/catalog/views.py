@@ -78,12 +78,39 @@ class CategoryListView(generics.ListCreateAPIView):
 class ProductFilter(django_filters.FilterSet):
     min_price = django_filters.NumberFilter(field_name="base_price", lookup_expr='gte')
     max_price = django_filters.NumberFilter(field_name="base_price", lookup_expr='lte')
-    category = django_filters.CharFilter(field_name="category__slug")
+    category = django_filters.CharFilter(method='filter_category')
     seller = django_filters.UUIDFilter(field_name="seller__id")
 
     class Meta:
         model = Product
         fields = ['category', 'min_price', 'max_price', 'seller']
+
+    def filter_category(self, queryset, name, value):
+        if not value:
+            return queryset
+        val_str = str(value).strip()
+        cat = Category.objects.filter(slug=val_str).first()
+        if not cat:
+            try:
+                import uuid
+                cat = Category.objects.filter(id=uuid.UUID(val_str)).first()
+            except (ValueError, AttributeError):
+                pass
+
+        if not cat:
+            return queryset.filter(Q(category__slug=val_str) | Q(category__name__iexact=val_str))
+
+        # Collect this category and all its recursive descendant subcategories
+        category_ids = {cat.id}
+        frontier = [cat.id]
+        while frontier:
+            child_ids = list(Category.objects.filter(parent_id__in=frontier).values_list('id', flat=True))
+            if not child_ids:
+                break
+            category_ids.update(child_ids)
+            frontier = child_ids
+
+        return queryset.filter(category_id__in=category_ids)
 
 
 class ProductListView(generics.ListAPIView):
